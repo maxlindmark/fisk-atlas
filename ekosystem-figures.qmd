@@ -30,6 +30,7 @@ library(patchwork)
 library(viridis)
 library(RColorBrewer)
 library(ggforce)
+library(ggh4x)
 library(readxl)
 library(raster)
 library(ggalluvial)
@@ -271,7 +272,8 @@ for(i in unique(discard_spec$Art)) {
   discard_spec %>% 
     filter(Art == i) %>% 
     ggplot(aes(year, value / 1000, fill = fishery)) +
-    facet_grid(name~HAVSKOD, scales = "free_y") +
+    #facet_grid(name~HAVSKOD, scales = "free_y") +
+    facet_grid2(name~HAVSKOD, independent = "y", scales = "free_y") +
     geom_bar(stat = "identity") + 
     scale_fill_brewer(palette = "Set2", name = "") +
     theme(legend.position = "bottom") + 
@@ -281,7 +283,6 @@ for(i in unique(discard_spec$Art)) {
     ggsave(paste0("figures/ecosystem/west_coast/landing_discard_fishery_", i, ".png"), width = 17, height = 17, units = "cm")
 
 }
-
 ```
 
 

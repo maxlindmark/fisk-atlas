@@ -1485,7 +1485,7 @@ discard_ratio_heat <- ggplot(discard_trends, aes(year, reorder(Art, prop), fill 
   scale_fill_viridis(option = "magma") +
   geom_text(data = md %>% filter(fishery == head(fishery, 1)), size = 3.5, 
             aes(year, Inf, label = label), inherit.aes = FALSE, angle = 90,
-            color = "grey50", hjust = 2) +
+            color = "grey50", hjust = 1.9) +
   coord_cartesian(expand = 0) +
   labs(y = "", x = "År", fill = "Andel utkast av fångst") + 
   guides(fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
