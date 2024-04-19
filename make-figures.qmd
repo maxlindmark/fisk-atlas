@@ -1,0 +1,1931 @@
+---
+title: "Create figures for fishery atlas"
+author: "Max Lindmark"
+date: today
+date-format: iso
+toc: true
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 100%
+editor: source
+execute:
+  warning: false
+---
+
+# Load libraries
+
+```{r load libs}
+#| message: false
+
+library(tidyverse)
+library(tidylog)
+library(patchwork)
+library(viridis)
+library(RColorBrewer)
+library(ggforce)
+library(readxl)
+library(ggalluvial)
+#library(ggspatial)
+library(raster)
+library(sp)
+# devtools::install_github("seananderson/ggsidekick") # not on CRAN 
+library(ggsidekick); theme_set(theme_sleek(base_size = 10))
+
+# Set make working directory relative to your path -- no hardcoded paths
+home <- here::here()
+
+# Load functions for plotting and manipulating data
+source(paste0(home, "/R/lat-lon.R"))
+source(paste0(home, "/R/map-plot.R"))
+
+# Change the limit for scientific notation
+options(scipen = 10000)
+```
+
+# Load data
+
+<!-- These are the data I think are used for plotting -->
+
+<!-- - vessel stems effort stems from lb.sel stems from lb -->
+<!-- - data stems from fartyg.data stems from fartyg made in script catch_effort_vessels.RData -->
+<!-- - dat.cum stems from vesselValue stems from vessel -->
+<!-- - hist.data and pie.data stem from lb.sel stems from lb -->
+<!-- - plot.effort, plot.gear and plot.art stems from dat.plot.fishery stems from dat which is in script catch_effort_vessels.RData, which is made in Species_fisheries_years_gears_areas_data_setup.R -->
+<!-- - plot.art.kvant, plot.art.effort and pie.data.art stems from plot.art -->
+
+* Making figures in the order they appear in the previous atlas
+
+* Sometimes I have standardized omitted plots and I have focused more on producing a script that can be updated each year automatically
+
+* The plotting conventions are as follows (trying to follow Claus Wilke's [Fundamentals of Data Visualization](https://clauswilke.com/dataviz/)):
+  * Trends over time (single level): `geom_line()`, and also when the trend is not visible with bar or area plot
+  * Trends over time (many levels): `geom_area()` or `geom_bar`, depending on how smooth it is over time. If smooth, area, if not bar. Bar also for discards because we have gaps in the time series
+  * many levels (time periods or single time): `geom_col()` with `facet_zoom()` to visualize small groups
+  * Seasonal trends: `coord_polar()`
+  * Colors:
+    * viridis plasma for map plots
+    * gears: ramp up RdYlBu (cluster by fishery)
+    * species: ramp up set3 (cluster by family)
+    * fisheries: mako (cluster by similarity)
+    * years: spectral
+    
+* quarto, `renv::renv()`, GitHub to ensure reproducibility
+
+
+* TODO
+
+  * Ansträngning? Days-at-sea? Over time or within a year? 
+  * Rerun with high-quality maps
+  * Gör även fig. 2.1.10 och 2.1.11?
+
+Långsiktigt:
+- Gör funktioner för data prep! Typ, `get_vessel_size_distribution()`
+- Värden på arter
+
+
+```{r}
+#| message: false
+# Sofia has now updated it so that it's a single file with the "correct" focat code
+load(paste0(home, "/data/test_lovgren_foCatFA.RData"))
+lb <- lovgren_foCatFA %>% rename(foCatFA = foCatFA_update)
+
+# Add fisheries common names
+fishery_names <- read_delim(paste0(home, "/data/names_fisheries.csv"), delim = ";") %>%
+  dplyr::select(-HAVSKOD, -Redskap, -foCatFA_tmp, -foCatEu4)
+
+# See how they match
+#setdiff(fishery_names$foCatFA, lb$foCatFA)
+
+lb <- lb %>% left_join(fishery_names, by = "foCatFA")
+
+# TODO: All active non-pelagic gear in the Baltic are not cod-trawl, esp after 2019. Rename?
+
+# Add coordinates
+lb <- lb %>%
+  mutate(lat = format_position(LATITUD),
+         lon = format_position(LONGITUD))
+
+# Now that we have coords, we can trim the map plot function
+# High resolution maps for single plots and/or local plots
+plot_map_l <- plot_map_l + 
+  xlim(min(filter(lb, lat > 50)$lon), max(filter(lb, lat > 50)$lon)) +
+  ylim(min(filter(lb, lat > 50)$lat), max(filter(lb, lat > 50)$lat))
+
+# Medium resolution map is for facets and/or for large maps
+plot_map_m <- plot_map_m + 
+  xlim(min(lb$lon), max(lb$lon)) +
+  ylim(min(lb$lat), max(lb$lat))
+
+# Add year & month
+lb <- lb %>% 
+  mutate(year = year(as.Date(as.character(AVRESDAT), format = "%Y%m%d")),
+         month = month(as.Date(as.character(AVRESDAT), format = "%Y%m%d")),
+         month_name = as.factor(month),
+         month_name = fct_recode(month_name,
+                                 "Januari" = "1",
+                                 "Februari" = "2",
+                                 "Mars" = "3",
+                                 "April" = "4",
+                                 "Maj" = "5",
+                                 "Juni" = "6",
+                                 "Juli" = "7",
+                                 "Augusti" = "8",
+                                 "September" = "9",
+                                 "Oktober" = "10",
+                                 "November" = "11",
+                                 "December" = "12"))
+
+# Add harbour names. For some reason they are in two files... 
+harbors <- read_excel(paste0(home, "/data/Code-location-v1.7.xls"), skip = 4) %>% 
+  dplyr::select(`ISO-3 Country Code`, `LOCODE Code`, Description, Latitude, Longitude) %>% 
+  janitor::clean_names() %>% 
+  rename(LANDHAMN_EUKOD = locode_code)
+
+# Join harbour file with coordinates to the landhamn data below (LANDHAMN_EUKOD = LOCODE, SE 999 is NA)
+load(paste0(home, "/data/landhamn_2003-2022.RData")) 
+
+# The way to join harbours into the lb data is not via harbour name, but unique activity. That's we we join harbors to landhamn
+landhamn <- landhamn %>% left_join(harbors, by = "LANDHAMN_EUKOD")
+
+# Resnummer, loggbladsnummer, aktivitetsnummer, year is an ID for a single "effort". But it's duplicated, but not in any of the columns I can see. Perhaps landed species? Make this ID in both and join. 
+landhamn <- landhamn %>%
+  mutate(id = paste(RESNR, LOGGBLNR, AKTIVNR, year, sep = "_")) %>%
+  distinct(id, .keep_all = TRUE) %>% 
+  rename(landhamn_lat = latitude,
+         landhamn_lon = longitude) %>% 
+  dplyr::select(id, LANDHAMN, landhamn_lat, landhamn_lon)
+
+lb <- lb %>%
+  mutate(id = paste(RESNR, LOGGBLNR, AKTIVNR, year, sep = "_")) 
+
+lb <- lb %>% left_join(landhamn, by = "id")
+
+# Efter 2016 finns det olika typer av landnings (för landhamn så blir det ingen match om inte fångsten landats! se t.ex. redskap)
+
+# Add species common and latin names
+spcode <- read_delim(paste0(home, "/data/names_species.csv"), delim = ";") %>% 
+  dplyr::select(FNAMNSVE, MAFKOD)
+
+# Clean some errors and categories we don't use
+lb <- lb %>%
+  left_join(spcode, by = "MAFKOD") %>% 
+  filter(KVANT > 0) %>% 
+  filter(!FNAMNSVE %in% c("Redskap Med Sälskada (St Redskap)",
+                          "Obest. benfiskar")) %>%
+  drop_na(FNAMNSVE)
+ 
+# Add gear names
+# TODO: use Sofia's data? But 2021 does not contain all gears
+gear_names <- read_delim(paste0(home, "/data/scrap_names_gear.csv"), delim = ";") %>%
+  dplyr::select(-Note)
+
+# gear_names <- read_delim(paste0(home, "/data/names_gear.csv"), delim = ";") %>%
+#   dplyr::select(-Note) %>% 
+#   mutate(Redskap2 = NA) %>% 
+#   mutate(Redskap2 = ifelse(grepl("Parbottentrål", REDSKAP), "Parbottentrål", Redskap2),
+#          Redskap2 = ifelse(grepl("Bottentrål", REDSKAP), "Bottentrål", Redskap2),
+#          Redskap2 = ifelse(grepl("Btrål", REDSKAP), "Bottentrål", Redskap2),
+#          Redskap2 = ifelse(grepl("Flyttrål", REDSKAP), "Flyttrål", Redskap2),
+#          Redskap2 = ifelse(grepl("Parflyttrål", REDSKAP), "Parflyttrål", Redskap2)) %>% 
+#   as.data.frame()
+
+# gear_names
+# 
+# unique(gear_names$Redskap2)
+
+lb <- lb %>% left_join(gear_names, by = "REDSKKOD")
+
+# Load discards
+discard <- read_excel(paste0(home, "/data/Discard 2008-2022.xlsx")) %>%
+  dplyr::select(Year, foCatNat, Art, `Utkast (kg)`) %>% 
+  rename(year = Year,
+         discards = `Utkast (kg)`)
+
+# Join the total loggbook landings by the same aggregation (year, fishery)
+lb_fishery <- lb %>% 
+  rename(Art = FNAMNSVE) %>% 
+  summarise(KVANT = sum(KVANT), .by = c(foCatNat, year, Art))
+  
+discard <- discard %>%
+  left_join(lb_fishery, by = c("foCatNat", "year", "Art")) %>%
+  filter(discards > 0)
+
+# Lastly, join in fishery based on focatnat
+discard <- discard %>% 
+  left_join(lb %>%
+              distinct(foCatNat, .keep_all = TRUE) %>%
+              dplyr::select("fishery", "foCatNat", "HAVSKOD"),
+            by = "foCatNat") %>% 
+  drop_na(fishery)
+
+# Annotation df for discard
+md <- expand_grid(year = c(2020, 2021, 2015), 
+                  y = 0,
+                  fishery = unique(discard$fishery),
+                  label = "No discard data collection") %>% 
+  mutate(keep = ifelse(year == 2015 & !fishery == "Bottentrålfiske efter torsk i Östersjön", "N", "Y")) %>% 
+  filter(keep == "Y") %>% 
+  dplyr::select(-keep)
+
+# Add ICES subdivision
+shape <- shapefile(paste0(home, "/data/ICES_StatRec_mapto_ICES_Areas/StatRec_map_Areas_Full_20170124.shp"))
+
+pts <- SpatialPoints(cbind(lb$lon, lb$lat), 
+                     proj4string = CRS(proj4string(shape)))
+
+lb$subdiv <- over(pts, shape)$Area_27
+```
+
+```{r}
+#| code-fold: false
+
+# TODO: Check Redskap2, did I do it correctly? I think I could also have gotten redskap by joining Fiskeridata_FLEET by "foCatEu4", but then I'd rather make a new file that is distinct with respect to "foCatEu4" and "redskap", because it's unclear to me why it isn't (has year/month but they don't change by that...). Moreover, it seems to miss things. Perhaps it's best to match and get Redskap and then assign that to a category
+```
+
+```{r}
+#| include: false
+#| eval: false
+#| echo: false
+
+#Define color palette for species that works throughout all 
+
+# This is not going to work. Better to have inconsistent colors than not being able to distinguish species
+# This is not even accounting for all discard species
+# # Here I need a color that has visible colors in both extreme ends
+# colors <- colorRampPalette(brewer.pal(name = "Spectral", n = 11))(35) # length of species vector, can change with time
+# #colors <- colorRampPalette(brewer.pal(name = "Set3", n = 12))(35)
+# 
+# # I've manually changed the order here to make species that tend to co-occur more visible
+# sp_palette <- c(Abborre = colors[1],
+#                 Braxen = colors[2],
+#                 Bleka = colors[3],
+#                 Blåmusslor = colors[4],
+#                 Blåvitling = colors[5],
+#                 Fjärsing = colors[6],
+#                 Gråsej = colors[7],
+#                 Gädda = colors[8],
+#                 Gös = colors[9],
+#                 Havskräfta = colors[10], 
+#                 Havskatt = colors[11],
+#                 Hummer = colors[12],
+#                 Kolja = colors[13], 
+#                 Krabbtaska = colors[14], 
+#                 Kummel = colors[15], 
+#                 Långa = colors[16], 
+#                 Lax = colors[17], 
+#                 Makrill = colors[18], 
+#                 Marulk = colors[19],
+#                 Nordhavsräka = colors[20], 
+#                 Pigghaj = colors[21], 
+#                 Piggvar = colors[22], 
+#                 Rödspotta = colors[23], 
+#                 Rödtunga = colors[24], 
+#                 Siklöja = colors[25], 
+#                 `Sill/Strömming` = colors[26], 
+#                 Sjurygg = colors[27], 
+#                 Skarpsill = colors[28], 
+#                 Skrubbskädda = colors[29],
+#                 Tobis = colors[30], 
+#                 Torsk = colors[31], 
+#                 Vitling = colors[32], 
+#                 Ål = colors[33], 
+#                 `Äkta tunga` = colors[34], 
+#                 Öring = colors[35])
+# 
+# t <- lb %>%
+#   filter(FNAMNSVE %in% names(palette)) %>%
+#   summarise(m = log(mean(KVANT)), .by = FNAMNSVE)
+# 
+# ggplot(t, aes(FNAMNSVE, m, fill = FNAMNSVE)) +
+#   geom_bar(stat = "identity") +
+#   scale_fill_manual(values = sp_palette)
+```
+
+# Entire fleet
+
+### Map-plots of fishing activity (landings)
+
+```{r fig 1.4.1}
+#| message: false
+# For creating hexagon polygons: https://urbandatapalette.com/post/2021-08-tessellation-sf/
+# For summing landings by hexagon polygons https://stackoverflow.com/questions/69438693/tallying-variable-for-points-across-polygons-with-sfst-covers
+
+lb_sf <- lb %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326, remove = FALSE)
+
+area_honeycomb_grid = st_make_grid(lb_sf, 0.5, what = "polygons", square = FALSE)
+#area_square_grid = st_make_grid(lb_sf, c(0.15, 0.1), what = "polygons", square = FALSE)
+
+# To sf and add grid ID
+honeycomb_grid_sf = st_sf(area_honeycomb_grid) %>%
+  mutate(polygon_id = as.character(1:length(lengths(area_honeycomb_grid)))) # add grid ID
+
+polygon_counts <- lb_sf %>%
+  mutate(polygon_id = as.character(st_intersects(geometry, honeycomb_grid_sf))) %>%
+  group_by(year, polygon_id) %>%
+  summarise(sum_kvant = sum(KVANT)) %>%
+  st_drop_geometry()
+
+polygon_sum <- honeycomb_grid_sf %>%
+  left_join(polygon_counts, by = "polygon_id") %>%
+  drop_na(sum_kvant)
+
+# All years but Morocco & Arctic excluded for visibility
+landings_map <- plot_map_m +
+  geom_sf(data = polygon_sum, aes(fill = sum_kvant/1000), color = NA) +
+  scale_fill_viridis(trans = "sqrt", option = "plasma",
+                     na.value = "yellow",
+                     limits = c(0, quantile(polygon_sum$sum_kvant/1000, 0.99)),
+                     name = "Landningar (ton)") +
+  geom_sf(color = "gray70") +
+  facet_wrap(~year, ncol = 5) +
+  xlim(min(filter(lb, lat > 50)$lon), max(filter(lb, lat > 50)$lon)) +
+  ylim(min(filter(lb, lat > 50)$lat), 70) +
+  guides(fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
+  theme(axis.text.x = element_text(angle = 90),
+        legend.position = "bottom", 
+        legend.title = element_text(size = 6),
+        legend.text = element_text(size = 5),
+        legend.key.width = unit(1, "cm"),
+        legend.key.height = unit(0.3, "cm"))
+
+ggsave(plot = landings_map, paste0(home, "/figures/entire_fleet/landings_map.png"), width = 17, height = 17, units = "cm")
+
+# Now aggregate all years pooled and make a big map plot
+polygon_counts_agg <- polygon_counts %>% 
+  mutate(tp = ifelse(year > 2015, "2016-2022", "2003-2015")) %>% 
+  group_by(tp, polygon_id) %>% 
+  summarise(sum_kvant = sum(sum_kvant) / 1000000)
+
+polygon_sum_agg <- honeycomb_grid_sf %>%
+  left_join(polygon_counts_agg, by = "polygon_id") %>%
+  drop_na(sum_kvant)
+
+landings_map_select <- plot_map_m +
+  geom_sf(data = polygon_sum_agg, aes(fill = sum_kvant), color = NA) +
+  scale_fill_viridis(trans = "sqrt", option = "plasma",
+                     na.value = "yellow", name = "Landningar (tusen ton)",
+                     limits = c(0, quantile(polygon_sum_agg$sum_kvant, 0.99))) +
+  geom_sf(color = "gray70") +
+  facet_wrap(~tp) + 
+  theme(axis.text.x = element_text(angle = 0),
+        legend.position = c(0.12, 0.9))
+
+ggsave(plot = landings_map_select, paste0(home, "/figures/entire_fleet/landings_map_select.png"), width = 17, height = 17, units = "cm")
+```
+
+Landings-quantity by landing harbour
+
+```{r}
+# Make also a table here... 
+land_quant_new <- lb %>%
+  filter(year > 2015) %>% 
+  summarise(kvant_sum = sum(KVANT) / 1000000, .by = LANDHAMN) %>% 
+  left_join(lb %>%
+              distinct(LANDHAMN, .keep_all = TRUE) %>%
+              dplyr::select(landhamn_lat, landhamn_lon, LANDHAMN),
+            by = "LANDHAMN") %>% 
+  drop_na(landhamn_lat, landhamn_lon)
+
+land_quant_old <- lb %>%
+  filter(year < 2016) %>% 
+  summarise(kvant_sum = sum(KVANT) / 1000000, .by = LANDHAMN) %>% 
+  left_join(lb %>%
+              distinct(LANDHAMN, .keep_all = TRUE) %>%
+              dplyr::select(landhamn_lat, landhamn_lon, LANDHAMN),
+            by = "LANDHAMN") %>% 
+  drop_na(landhamn_lat, landhamn_lon)
+
+land_plot <- plot_map_m + 
+  scale_color_gradient(high = "#A50026", low = "#313695") + # These are from RdYlBu in RColorBrewer
+  scale_size(range = c(0.2, 6)) + 
+  xlim(min(c(land_quant_old$landhamn_lon,
+             land_quant_new$landhamn_lon)),
+       max(c(land_quant_old$landhamn_lon,
+             land_quant_new$landhamn_lon))) +
+  ylim(min(c(land_quant_old$landhamn_lat,
+             land_quant_new$landhamn_lat)),
+       max(c(land_quant_old$landhamn_lat,
+             land_quant_new$landhamn_lat))) +
+  labs(color = "Landningar (ton)", size = "") +
+  guides(size = "none", color = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
+  theme_sleek(base_size = 9) +
+  theme(legend.position = c(0.5, 0.9),
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 7),
+        legend.text = element_text(size = 6),
+        legend.key.width = unit(0.5, "cm"),
+        legend.key.height = unit(0.15, "cm"))
+  
+p1 <- land_plot +
+  geom_point(data = land_quant_old, aes(landhamn_lon, landhamn_lat, color = kvant_sum, size = kvant_sum),
+             alpha = 0.4) +
+  annotate("text", label = paste0("Medel=", round(mean(land_quant_old$kvant_sum)), " ton"),
+           x = -Inf, y = Inf, hjust = -0.06, vjust = 2, color = "gray20", size = 2) +
+  annotate("text", label = "År 2003-2015",
+           x = -Inf, y = Inf, hjust = -0.1, vjust = 4, color = "gray20", size = 2)
+
+p2 <- land_plot +
+  geom_point(data = land_quant_new, aes(landhamn_lon, landhamn_lat, color = kvant_sum, size = kvant_sum),
+             alpha = 0.4) + 
+  annotate("text", label = paste0("Medel=", round(mean(land_quant_new$kvant_sum)), " ton"),
+           x = -Inf, y = Inf, hjust = -0.06, vjust = 2, color = "gray20", size = 2) +
+  annotate("text", label = "År 2016-2022",
+           x = -Inf, y = Inf, hjust = -0.1, vjust = 4, color = "gray20", size = 2)
+
+landings_harbour <- p1 + p2
+
+ggsave(plot = landings_harbour, paste0(home, "/figures/entire_fleet/landings_harbour.png"), width = 20, height = 8, units = "cm")
+```
+
+![Fig. 1.4.1 Utbredning av fiskeplatser (rapporterade landningar) i svenska yrkesfisket 2003--2022.](figures/entire_fleet/landings_map.png)
+
+![Fig. 1.4.1 Utbredning av fiskeplatser (rapporterade landningar) i svenska yrkesfisket för åren 2003-2015 (vänster) samt för 2016-2022 (höger)](figures/entire_fleet/landings_map_select.png)
+
+![Fig. 1.4.1 Utbredning av landningshamnnar (rapporterade landningar) i svenska yrkesfisket för åren 2003-201 (vänster) samt för 2016-2022 (höger)](figures/entire_fleet/landings_harbour.png)
+
+### Match catches to landings. Note we only match unique hauls for 2022, else to crowded
+
+```{r}
+# Now match catches to landings
+link <- lb %>%
+  filter(year == 2022) %>%
+  drop_na(landhamn_lon) %>%
+  mutate(sum_kvant = sum(KVANT), .by = c(id, year)) %>% 
+  distinct(id, .keep_all = TRUE)
+  
+p1 <- plot_map_m +
+  geom_curve(data = link %>% filter(FNAMNSVE == "Skarpsill"),
+             aes(x = lon, xend = landhamn_lon, y = lat, yend = landhamn_lat,
+                 color = sum_kvant/1000),
+             curvature = -0.15, angle = 90, alpha = 0.1, linewidth = 0.1) + #color = "grey20") +
+  geom_point(data = link %>% filter(FNAMNSVE == "Skarpsill"),
+             aes(landhamn_lon, landhamn_lat), size = 0.01, color = "#A50026") +
+  coord_sf(xlim = c(min(c(link$landhamn_lon, link$lon)),
+                    max(c(link$landhamn_lon, link$lon))),
+           ylim = c(min(c(link$landhamn_lat, link$lat)),
+                    max(c(link$landhamn_lat, link$lat)))) + 
+  scale_color_viridis(trans = "log10", breaks = c(0.1, 1, 10, 100),
+                      option = "mako", name = "Ton", direction = -1) +
+  theme(legend.position = c(0.1, 0.85),
+        legend.key.height = unit(0.25, "cm"),
+        legend.key.width = unit(0.2, "cm"),
+        legend.title = element_text(size = 7))
+
+p2 <- plot_map_l +
+  geom_curve(data = link,
+             aes(x = lon, xend = landhamn_lon, y = lat, yend = landhamn_lat,
+                 color = sum_kvant/1000),
+             curvature = -0.15, angle = 90, alpha = 0.1, linewidth = 0.07) + #color = "grey20") +
+  geom_point(data = link %>% filter(FNAMNSVE == "Skarpsill"),
+             aes(landhamn_lon, landhamn_lat), size = 0.05, color = "#A50026") +
+  coord_sf(xlim = c(10, 12.5), ylim = c(56.7, 59)) + 
+  scale_color_viridis(trans = "log10", breaks = c(0.1, 1, 10, 100),
+                      option = "mako", name = "Ton", direction = -1) +
+  guides(color = "none") + 
+  labs(y = "", x = "")
+
+landings_map_arrow <- p1 + p2
+
+ggsave(plot = landings_map_arrow, 
+       paste0(home, "/figures/entire_fleet/landings_map_arrow.png"), width = 17, height = 10, units = "cm")
+
+
+# By ICES sub division instead?
+link_agg <- lb %>%
+  filter(year == 2022) %>%
+  drop_na(landhamn_lon) %>%
+  filter(KVANT > 0) %>%
+  summarise(sum_kvant = sum(KVANT), .by = c(year, subdiv, LANDHAMN))
+
+# Join in sub div coordinates
+sub_div_coord <- lb %>% 
+  drop_na(subdiv) %>% 
+  summarise(lon2 = mean(lon), lat2 = mean(lat), .by = subdiv)
+
+link_agg <- link_agg %>% 
+  left_join(sub_div_coord, by = "subdiv")
+
+# Join in landhamn coordinates
+land_coord <- lb %>% 
+  distinct(LANDHAMN, .keep_all = TRUE) %>% 
+  dplyr::select(LANDHAMN, landhamn_lon, landhamn_lat)
+
+link_agg <- link_agg %>% 
+  left_join(land_coord, by = "LANDHAMN")
+
+p1 <- plot_map_m +
+  geom_curve(data = link_agg,
+             aes(x = lon2, xend = landhamn_lon, y = lat2, yend = landhamn_lat,
+                 color = sum_kvant/1000, linewidth = sum_kvant/1000),
+             curvature = -0.15, angle = 90, alpha = 0.4,
+             arrow = arrow(length = unit(0.1, "cm"), 
+                           type = "closed")) + 
+  geom_point(data = link_agg,
+             aes(landhamn_lon, landhamn_lat), size = 0.01, color = "#A50026") +
+  scale_linewidth(range = c(0.1, 3.5)) + 
+  coord_sf(xlim = c(min(c(link$landhamn_lon, link$lon)),
+                    max(c(link$landhamn_lon, link$lon))),
+           ylim = c(min(c(link$landhamn_lat, link$lat)),
+                    max(c(link$landhamn_lat, link$lat)))) +
+  scale_color_viridis(trans = "log10", breaks = c(0.1, 1, 10, 100, 1000, 10000),
+                      option = "mako", name = "Ton", direction = -1) +
+  guides(linewidth = "none") +
+  theme(legend.position = c(0.1, 0.85),
+        legend.key.height = unit(0.25, "cm"),
+        legend.key.width = unit(0.2, "cm"),
+        legend.title = element_text(size = 7))
+
+p2 <- plot_map_l +
+  geom_curve(data = link_agg,
+             aes(x = lon2, xend = landhamn_lon, y = lat2, yend = landhamn_lat,
+                 color = sum_kvant/1000, linewidth = sum_kvant/1000),
+             curvature = -0.15, angle = 90, alpha = 0.4,
+             arrow = arrow(length = unit(0.08, "cm"), 
+                           type = "closed")) + 
+  scale_linewidth(range = c(0.1, 3.5)) + 
+  geom_point(data = link,
+             aes(landhamn_lon, landhamn_lat), size = 0.05, color = "#A50026") +
+  coord_sf(xlim = c(10, 12.5), ylim = c(56.7, 59)) + 
+  scale_color_viridis(trans = "log10", breaks = c(0.1, 1, 10, 100),
+                      option = "mako", name = "Ton", direction = -1) +
+  guides(color = "none",
+         linewidth = "none") + 
+  labs(y = "", x = "")
+
+landings_map_arrow <- p1 + p2
+
+ggsave(plot = landings_map_arrow, 
+       paste0(home, "/figures/entire_fleet/landings_map_arrow_subdiv.png"), width = 17, height = 10, units = "cm")
+```
+
+Same as above but with numbers of fishing activities. Note this requires some aggregation. 
+
+```{r}
+link_agg <- lb %>%
+  filter(year == 2022) %>%
+  drop_na(landhamn_lon) %>%
+  summarise(n_trips = n(), .by = c(year, subdiv, LANDHAMN))
+
+# Join in sub div coordinates
+sub_div_coord <- lb %>% 
+  drop_na(subdiv) %>% 
+  summarise(lon2 = mean(lon), lat2 = mean(lat), .by = subdiv)
+
+link_agg <- link_agg %>% 
+  left_join(sub_div_coord, by = "subdiv")
+
+# Join in landhamn coordinates
+land_coord <- lb %>% 
+  distinct(LANDHAMN, .keep_all = TRUE) %>% 
+  dplyr::select(LANDHAMN, landhamn_lon, landhamn_lat)
+
+link_agg <- link_agg %>% 
+  left_join(land_coord, by = "LANDHAMN")
+
+p1 <- plot_map_m +
+  geom_curve(data = link_agg,
+             aes(x = lon2, xend = landhamn_lon, y = lat2, yend = landhamn_lat,
+                 color = n_trips, linewidth = n_trips),
+             curvature = -0.15, angle = 90, alpha = 0.4,
+             arrow = arrow(length = unit(0.1, "cm"), 
+                           type = "closed")) + 
+  geom_point(data = link_agg,
+             aes(landhamn_lon, landhamn_lat), size = 0.01, color = "#A50026") +
+  scale_linewidth(range = c(0.3, 2)) + 
+  coord_sf(xlim = c(min(c(link$landhamn_lon, link$lon)),
+                    max(c(link$landhamn_lon, link$lon))),
+           ylim = c(min(c(link$landhamn_lat, link$lat)),
+                    max(c(link$landhamn_lat, link$lat)))) +
+  scale_color_viridis(trans = "log10", breaks = c(0.1, 1, 10, 100, 1000, 10000),
+                      option = "mako", name = "Antal ansträngningar", direction = -1) +
+  guides(linewidth = "none") +
+  theme(legend.position = c(0.18, 0.85),
+        legend.key.height = unit(0.25, "cm"),
+        legend.key.width = unit(0.2, "cm"),
+        legend.title = element_text(size = 7))
+
+p2 <- plot_map_l +
+  geom_curve(data = link_agg,
+             aes(x = lon2, xend = landhamn_lon, y = lat2, yend = landhamn_lat,
+                 color = n_trips, linewidth = n_trips),
+             curvature = -0.15, angle = 90, alpha = 0.4,
+             arrow = arrow(length = unit(0.08, "cm"), 
+                           type = "closed")) + 
+  scale_linewidth(range = c(0.3, 2)) + 
+  geom_point(data = link,
+             aes(landhamn_lon, landhamn_lat), size = 0.05, color = "#A50026") +
+  coord_sf(xlim = c(10, 12.5), ylim = c(56.7, 59)) + 
+  scale_color_viridis(trans = "log10", breaks = c(0.1, 1, 10, 100),
+                      option = "mako", name = "Antal ansträngningar", direction = -1) +
+  guides(color = "none",
+         linewidth = "none") + 
+  labs(y = "", x = "")
+
+trips_map_arrow_subdiv <- p1 + p2
+
+ggsave(plot = trips_map_arrow_subdiv, 
+       paste0(home, "/figures/entire_fleet/trips_map_arrow_subdiv.png"), width = 17, height = 10, units = "cm")
+```
+
+![Fig. x Fångster kopplade till landningar (1 linje = 1 ansträngning)](figures/entire_fleet/landings_map_arrow.png) 
+
+![Fig. x Fångster kopplade till landningar (1 linje = 1 ansträngning), aggregerat på sub division](figures/entire_fleet/landings_map_arrow_subdiv.png) 
+
+![Fig. x Antal ansträngningar aggregerat på sub division](figures/entire_fleet/trips_map_arrow_subdiv.png) 
+
+### Sea of catch and country landed
+On a summarized level, where are fish caught and where are fish landed?
+
+```{r}
+spec_sub <- lb %>%
+  summarise(sum_kvant = sum(KVANT), .by = FNAMNSVE) %>%
+  arrange(desc(sum_kvant)) %>%
+  drop_na() %>%
+  slice(1:10)
+
+landland_sub <- lb %>%
+  summarise(sum_kvant = sum(KVANT), .by = LANDLAND) %>%
+  arrange(desc(sum_kvant)) %>%
+  drop_na() %>%
+  slice(1:8) %>% 
+  filter(!LANDLAND == "MAR")
+
+alluvial <- lb %>%
+  summarise(sum_kvant = sum(KVANT), .by = c(FNAMNSVE, HAVSKOD, LANDLAND)) %>%
+  filter(FNAMNSVE %in% unique(spec_sub$FNAMNSVE)) %>%
+  filter(LANDLAND %in% unique(landland_sub$LANDLAND)) %>%
+  drop_na()
+
+# Additional cleaning
+alluvial <- alluvial %>%
+  #filter(!fishery2 == "Fiske efter lax") %>% 
+  mutate(HAVSKOD2 = ifelse(HAVSKOD == "ÖN", "Norra\nÖstersjön", NA),
+         HAVSKOD2 = ifelse(HAVSKOD == "ÖS", "Södra\nÖstersjön", HAVSKOD2),
+         HAVSKOD2 = ifelse(HAVSKOD == "K", "Kattegatt", HAVSKOD2),
+         HAVSKOD2 = ifelse(HAVSKOD == "S", "Skagerrak", HAVSKOD2),
+         HAVSKOD2 = ifelse(HAVSKOD == "N", "Nordsjön", HAVSKOD2),
+         HAVSKOD2 = ifelse(HAVSKOD == "AN", "Norska Havet", HAVSKOD2))
+
+sea_species_landings <- 
+  ggplot(alluvial,
+         aes(axis1 = LANDLAND, axis2 = FNAMNSVE, axis3 = HAVSKOD2,
+             y = sqrt(sum_kvant))) +
+  geom_alluvium(aes(fill = FNAMNSVE, color = FNAMNSVE), curve_type = "cubic") +
+  geom_stratum(size = 0.5) +
+  geom_text(stat = "stratum", size = 3,
+            aes(label = after_stat(stratum))) +
+  guides(fill = "none") +
+  scale_fill_brewer(palette = "Paired", name = "") +
+  scale_color_brewer(palette = "Paired", name = "") +
+  theme_void(base_size = 1) +
+  guides(color = "none") +
+  theme(panel.background = element_rect(fill = "white"))
+
+ggsave(plot = sea_species_landings, paste0(home, "/figures/entire_fleet/sea_species_landings.png"), width = 20, height = 27, units = "cm")
+
+# Plotting sqrt transformation
+# test %>% 
+#   summarise(sum_kvant = sum(sum_kvant), .by = FNAMNSVE) %>% 
+#   mutate(sqrt_sum_kvant = sqrt(sum_kvant)) %>% 
+#   pivot_longer(c("sqrt_sum_kvant", "sum_kvant")) %>% 
+#   ggplot(aes(value, reorder(FNAMNSVE, value))) + 
+#   geom_bar(stat = "identity") + 
+#   facet_wrap(~name, ncol = 1, scales = "free_x")
+```
+
+![Fig. x Havsområde, art, landningsland. Topp 10 arter, och för dessa, topp 7 landningsländer](figures/entire_fleet/sea_species_landings.png) 
+
+### Cumulative number of harbours
+
+```{r}
+n_harbours <- lb %>%
+  summarise(n_harb = length(unique(LANDHAMN)),
+            n_vessel = length(unique(BATNAMN)), 
+            .by = year) %>% 
+  mutate(n_harb_scaled = n_harb / n_vessel)
+
+p1 <- ggplot(n_harbours, aes(year, n_harb)) +
+  geom_line(color = "gray40") + 
+  labs(x = "År", y = "Antal landningshamnar")
+
+p2 <- ggplot(n_harbours, aes(year, n_harb_scaled)) +
+  geom_line(color = "gray40") + 
+  labs(x = "År", y = "Antal landningshamnar relativt antal fartyg")
+
+harbors <- p1 / p2 + plot_layout(axes = "collect")
+
+ggsave(plot = harbors, "figures/entire_fleet/harbors.png", width = 17, height = 15, units = "cm")
+
+cumsum_harb <- lb %>% 
+  summarise(kvant_sum = sum(KVANT),
+            .by = c(year, LANDHAMN)) %>% 
+  arrange(year, desc(kvant_sum)) %>% 
+  mutate(cum_sum = cumsum(kvant_sum), 
+         year_tot = sum(kvant_sum),
+         cum_sum_prop = cum_sum / year_tot,
+         n = row_number(),
+         .by = year)
+
+ogives_harb <- cumsum_harb %>%
+  filter(year %in% c(2003, 2022) & cum_sum_prop < 0.8) %>%
+  group_by(year) %>%
+  filter(cum_sum_prop == max(cum_sum_prop))
+
+# Here I need a color that has visible colors in both extreme ends
+nyears <- length(unique(cumsum_harb$year))
+colors <- colorRampPalette(brewer.pal(name = "Spectral", n = 10))(nyears)
+
+p1 <- ggplot(cumsum_harb, aes(n, cum_sum_prop, color = factor(year))) + 
+  geom_line(alpha = 0.9) + 
+  scale_color_manual(values = colors, name = "") +
+  labs(y = "Kumulativ andel", x = "") + 
+  theme_sleek(base_size = 9) +
+  theme(legend.position = c(0.65, 0.1),
+        legend.direction = "horizontal",
+        legend.spacing.y = unit(0, 'cm'),
+        legend.spacing.x = unit(0, 'cm')) + 
+  guides(color = guide_legend(nrow = 2))
+
+p2 <- ggplot(cumsum_harb, aes(n, cum_sum_prop, color = factor(year))) + 
+  geom_hline(yintercept = 0.8, alpha = 0.5, linetype = 2) + 
+  geom_line(alpha = 0.9) + 
+  xlim(0, 65) +
+  geom_segment(data = ogives_harb, aes(x = n, xend = n, y = 0, yend = cum_sum_prop, color = factor(year)),
+               alpha = 0.9, linetype = 2) +
+  scale_color_manual(values = colors, name = "") +
+  labs(y = "Kumulativ andel", x = "Antal landningshamnar") + 
+  theme_sleek(base_size = 9) +
+  theme(legend.position = "bottom") + 
+  guides(color = "none") + 
+  coord_cartesian(expand = 0)
+
+cumulative_harbour <- p1 / p2
+
+ggsave(plot = cumulative_harbour, "figures/entire_fleet/cumulative_harbour.png", width = 17, height = 15, units = "cm")
+```
+
+![Fig. x Antal landningshamnar (totalt och relativt till antal fartyg)](figures/entire_fleet/harbors.png)
+
+![Fig. x Kumulativ andel av landningsvikt för det svenska yrkesfisket per år och landningshamn. De vertikala linjerna i den nedre panelen visar det antal hamnar som tar emot 80% av landningsvikten för åren 2003 (röd) och 2022 (blå).](figures/entire_fleet/cumulative_harbour.png)
+
+```{r 1.4.1 tables}
+# Tables
+
+# 2016-2022
+knitr::kable(lb %>%
+               filter(year > 2015) %>% 
+               summarise(kvant_sum = sum(KVANT) / 1000, .by = LANDHAMN) %>% 
+               arrange(desc(kvant_sum)) %>% 
+               rename(Hamn = LANDHAMN, "Total landings (tonnes)" = kvant_sum) %>% 
+               slice(1:10),
+             format = "html",
+             full_width = FALSE, 
+             caption = "Top 10 harbours by landings weight in 2016-2002")
+
+# 2003-2015
+knitr::kable(lb %>%
+               filter(year < 2016) %>% 
+               summarise(kvant_sum = sum(KVANT) / 1000, .by = LANDHAMN) %>% 
+               arrange(desc(kvant_sum)) %>% 
+               rename(Hamn = LANDHAMN, "Total landings (tonnes)" = kvant_sum) %>% 
+               slice(1:10),
+             format = "html",
+             full_width = FALSE, 
+             caption = "Top 10 harbours by landings weight in 2003-2015")
+```
+
+### Number of trips over time by fisheries heatmap
+
+```{r}
+trip_trends <- lb %>% 
+  #filter(year > 2015) %>% 
+  drop_na(fishery) %>% 
+  summarise(n_trips = length(unique(id)), .by = c(year, fishery)) %>% 
+  mutate(mean_trips = mean(n_trips), .by = c(fishery)) %>% 
+  mutate(scaled_mean = n_trips / mean_trips)
+
+order <- trip_trends %>% 
+  filter(year == 2022) %>% 
+  arrange(scaled_mean)
+
+trip_heat <-
+  ggplot(trip_trends, aes(year, factor(fishery, levels = order$fishery),
+                                   fill = scaled_mean)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(midpoint = 1) + 
+  coord_cartesian(expand = 0) +
+  labs(y = "", x = "År", fill = "Antal ansträngningar relativt\ntill medel för åren 2016-2022 per fiske") + 
+  guides(fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
+  theme(legend.position = "bottom", 
+        legend.key.width = unit(1, "cm"),
+        legend.key.height = unit(0.3, "cm"))
+
+ggsave(plot = trip_heat, "figures/entire_fleet/trip_heat.png", width = 17, height = 9, units = "cm")
+```
+
+![Fig. x Trender i antal ansträngninar](figures/entire_fleet/trip_heat.png)
+
+### Average catch per trip
+
+```{r}
+cath_per_trip_trends <- lb %>% 
+  #filter(year > 2015) %>% 
+  drop_na(fishery) %>% 
+  # mean catch by trip id, year and fishery
+  summarise(mean_kvant = mean(KVANT), .by = c(year, fishery, id)) %>% 
+  # average by year and fishery 
+  summarise(mean_kvant = mean(mean_kvant), .by = c(year, fishery)) %>% 
+  # scale relative to mean within fishery to make it proportional
+  mutate(mean_all_yr = mean(mean_kvant), .by = fishery) %>% 
+  mutate(scaled_mean = mean_kvant / mean_all_yr)
+
+order <- cath_per_trip_trends %>% 
+  filter(year == 2022) %>% 
+  arrange(scaled_mean)
+
+mean_land_trip_heat <-
+  ggplot(cath_per_trip_trends, aes(year, factor(fishery, levels = rev(order$fishery)),
+                                   fill = scaled_mean)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(midpoint = 1) + 
+  coord_cartesian(expand = 0) +
+  labs(y = "", x = "År", fill = "Medelfångst per ansträngning relativt\ntill medel för åren 2016-2022 per fiske") + 
+  guides(fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
+  theme(legend.position = "bottom", 
+        legend.key.width = unit(1, "cm"),
+        legend.key.height = unit(0.3, "cm"))
+
+ggsave(plot = mean_land_trip_heat, "figures/entire_fleet/mean_land_trip_heat.png", width = 17, height = 9, units = "cm")
+```
+
+![Fig. x Trend i medelfångst per tur över tid relativt till medel i fisket](figures/entire_fleet/mean_land_trip_heat.png)
+
+### Size distribution of fleet
+
+```{r 1.4.2}
+#| message: false
+
+pal <- brewer.pal(name = "Set1", n = 9)
+
+lb_vessel <- lb %>%
+  drop_na(LÄNGD) %>% 
+  filter(LÄNGD > 0) %>% 
+  summarise(n_vessels = length(unique(BATNAMN)), .by = c(year, LÄNGD)) %>% 
+  uncount(n_vessels)
+  
+lb_vessel_count <- lb %>%
+  drop_na(LÄNGD) %>% 
+  filter(LÄNGD > 0) %>% 
+  summarise(n_vessels = length(unique(BATNAMN)), .by = year) %>% 
+  mutate(lab = paste0("n = ", n_vessels))
+
+p1 <- ggplot(lb_vessel, aes(LÄNGD)) + 
+  geom_histogram() + 
+  facet_wrap(~year) + 
+  labs(x = "Längd (m)", y = "Antal fartyg") +
+  geom_text(data = lb_vessel_count, aes(Inf, Inf, label = lab), 
+            hjust = 1.2, vjust = 2, color = "gray20", size = 2) + 
+  coord_cartesian(expand = 0) + 
+  theme_sleek(base_size = 9)
+
+change <- lb %>% 
+  drop_na(LÄNGD) %>% 
+  filter(LÄNGD > 0) %>% 
+  mutate(LÄNGD = round(LÄNGD)) %>% 
+  mutate(LÄNGD_cat = cut(LÄNGD, breaks = seq(0, max(LÄNGD), by = 3)),
+         LÄNGD_cat = str_remove(LÄNGD_cat, "\\("),
+         LÄNGD_cat = str_remove(LÄNGD_cat, "\\]"),
+         LÄNGD_cat = str_replace(LÄNGD_cat, ",", "-"),
+         LÄNGD_cat = ifelse(is.na(LÄNGD_cat), "64-67", LÄNGD_cat)) %>% 
+  mutate(tp = ifelse(year < 2016, "old", "new")) %>% 
+  summarise(n_vessels = length(unique(BATNAMN)), .by = c(tp, LÄNGD_cat)) %>% 
+  pivot_wider(names_from = tp, values_from = n_vessels) %>% 
+  mutate(`Förändring (antal)` = new - old,
+         `Förändring (procent)` = ((new - old) / old) * 100,
+         diff_cat = ifelse(`Förändring (antal)` > 0, "increasing", "decreasing")) %>% 
+  pivot_longer(c("Förändring (antal)", "Förändring (procent)")) %>% 
+  separate_wider_delim("LÄNGD_cat", delim = "-", names = c("min_LÄNGD", "max_LÄNGD"),
+                       cols_remove = FALSE) %>% 
+  mutate(min_LÄNGD = as.numeric(min_LÄNGD))
+
+p2 <- ggplot(data = change, 
+             aes(x = reorder(LÄNGD_cat, min_LÄNGD), xend = reorder(LÄNGD_cat, min_LÄNGD),
+                 y = 0, yend = value, color = diff_cat)) + 
+  geom_hline(yintercept = 0, alpha = 0.5, linetype = 2, linewidth = 0.3) + 
+  geom_segment(arrow = arrow(length = unit(0.02, "npc"))) +
+  #geom_segment() +
+  #geom_point(aes(reorder(LÄNGD_cat, min_LÄNGD), value), size = 0.6) +
+  scale_fill_manual(values = alpha(pal[1:2], 0.1)) +
+  scale_color_manual(values = c(pal[1], pal[3])) + 
+  facet_wrap(~name, scales = "free") + 
+  labs(y = "2016:2022 - 2003:2015",
+       x = "Längdgrupp (m)") + 
+  guides(color = "none", fill = "none") +
+  theme_sleek(base_size = 9) &
+  theme(axis.text.x = element_text(angle = 90, size = 5))
+
+trend <- lb %>% 
+  drop_na(LÄNGD) %>% 
+  filter(LÄNGD > 0) %>% 
+  mutate(size_gr = ifelse(LÄNGD >= 10, ">=10 m", "<10 m")) %>% 
+  summarise(n_vessels = length(unique(BATNAMN)), .by = c(year, size_gr))
+
+p3 <- ggplot(trend, aes(year, n_vessels, fill = size_gr)) + 
+  geom_area() +
+  coord_cartesian(expand = 0) +
+  scale_fill_manual(values = c("grey40", "grey70"), name = "Fartygslängd") + 
+  labs(y = "Antal fartyg", x = "År") + 
+  theme_sleek(base_size = 9) + 
+  theme(legend.key.size = unit(0.3, "cm"))
+
+vessel_size_dist <- (p1 / (p2 + p3 + plot_layout(widths = c(1.5, 1)))) + plot_layout(heights = c(2.5, 1)) & 
+  theme(legend.position = c(0.87, 0.87),
+        legend.text = element_text(size = 5),
+        legend.title = element_text(size = 6),
+        legend.spacing.y = unit(0, 'cm'),
+        legend.spacing.x = unit(0, 'cm'))
+
+ggsave(plot = vessel_size_dist, paste0(home, "/figures/entire_fleet/vessel_size_dist.png"), width = 17, height = 19, units = "cm")
+```
+
+![Fig. 1.4.2--1.4.3 Längdfördelning av fartyg den svenska fiskeflottan per år (överst), förändring över tid i andel och procent i fartyg per storleksklass (nedre vänster) samt förändring över tid totalt över alla storlekar, över och under 10m (nedre höder)](figures/entire_fleet/vessel_size_dist.png)
+
+```{r}
+#| code-fold: false
+
+# TODO: Plots and results on capacity
+```
+
+### Fleet size
+
+```{r 1.4.12}
+lb_fish_ves <- lb %>% 
+  mutate(tp = ifelse(year < 2016, "2003-2015", "2016-2022")) %>% 
+  summarise(n_vessel = length(unique(BATNAMN)), .by = c(tp, fishery)) %>% 
+  drop_na() %>% 
+  pivot_wider(values_from = "n_vessel", names_from = "tp") %>% 
+  mutate(trend = ifelse(`2016-2022` > `2003-2015`, "decreasing", "increasing"))
+
+fishery_vessel <- ggplot(lb_fish_ves, aes(`2016-2022`, reorder(fishery, `2016-2022`))) + 
+  geom_bar(aes(`2003-2015`, reorder(fishery, `2016-2022`)),
+           stat = "identity", fill = "grey90") +
+  geom_bar(stat = "identity", fill = "grey60") +
+  geom_segment(aes(xend = `2016-2022`, x = `2003-2015`, y = reorder(fishery, `2016-2022`),
+                   color = trend),
+               arrow = arrow(length = unit(0.02, "npc"))) +
+  scale_color_manual(values = c(pal[3], pal[1])) + 
+  coord_cartesian(expand = 0) +
+  guides(color = "none") +
+  labs(x = "Antal fartyg", y = "")
+
+ggsave(plot = fishery_vessel, paste0(home, "/figures/entire_fleet/fishery_vessels.png"), width = 17, height = 8, units = "cm")
+```
+
+![Fig. 1.4.12 Antal fartyg per fiske i det svenska yrkesfisket på kusten och i havet för 2003-2015 (ljus) och 2016-2022 (mörk). Pilar indikerar skillnad och riktning](figures/entire_fleet/fishery_vessels.png)
+
+### Cumulative share of landings
+
+```{r 1.4.4}
+#| message: false
+cumsum <- lb %>% 
+  summarise(kvant_sum = sum(KVANT),
+            .by = c(year, BATNAMN)) %>% 
+  arrange(year, desc(kvant_sum)) %>% 
+  mutate(cum_sum = cumsum(kvant_sum), 
+         year_tot = sum(kvant_sum),
+         cum_sum_prop = cum_sum / year_tot,
+         n = row_number(),
+         .by = year)
+
+ogives <- cumsum %>%
+  filter(year %in% c(2003, 2022) & cum_sum_prop < 0.8) %>% 
+  group_by(year) %>% 
+  filter(cum_sum_prop == max(cum_sum_prop))
+
+# Here I need a color that has visible colors in both extreme ends
+nyears <- length(unique(cumsum$year))
+colors <- colorRampPalette(brewer.pal(name = "Spectral", n = 10))(nyears)
+
+p1 <- ggplot(cumsum, aes(n, cum_sum_prop, color = factor(year))) + 
+  geom_line(alpha = 0.9) + 
+  scale_color_manual(values = colors, name = "") +
+  labs(y = "Kumulativ andel", x = "") + 
+  theme_sleek(base_size = 9) +
+  theme(legend.position = c(0.65, 0.1),
+        legend.direction = "horizontal",
+        legend.spacing.y = unit(0, 'cm'),
+        legend.spacing.x = unit(0, 'cm')) + 
+  guides(color = guide_legend(nrow = 2))
+
+p2 <- ggplot(cumsum, aes(n, cum_sum_prop, color = factor(year))) + 
+  geom_hline(yintercept = 0.8, alpha = 0.5, linetype = 2) + 
+  geom_line(alpha = 0.9) + 
+  xlim(0, 65) +
+  geom_segment(data = ogives, aes(x = n, xend = n, y = 0, yend = cum_sum_prop, color = factor(year)),
+               alpha = 0.9, linetype = 2) +
+  scale_color_manual(values = colors, name = "") +
+  labs(y = "Kumulativ andel", x = "Antal fartyg") + 
+  theme_sleek(base_size = 9) +
+  theme(legend.position = "bottom") + 
+  guides(color = "none") + 
+  coord_cartesian(expand = 0)
+
+cumulative_landings <- p1 / p2
+
+ggsave(plot = cumulative_landings, "figures/entire_fleet/cumulative_landings.png", width = 17, height = 15, units = "cm")
+```
+
+![Fig. 1.4.4 Kumulativ andel av landningsvikt för det svenska yrkesfisket per år. De vertikala linjer i den nedre panelen visar det antal fartyg som fiskar in 80% av landningsvikten för åren 2003 (röd) och 2022 (blå).](figures/entire_fleet/cumulative_landings.png)
+
+### Landings by gear
+
+```{r 1.4.7}
+#| message: false
+lb_gear <- lb %>% 
+  drop_na(Redskap2) %>% 
+  summarise(sum_kvant = sum(KVANT), .by = c(year, Redskap2))
+
+pal_long <- colorRampPalette(brewer.pal(name = "RdYlBu", n = 11))(length(unique(lb_gear$Redskap2)))
+  
+order <- lb_gear %>% 
+  summarise(sum_kvant_all = sum(sum_kvant), .by = Redskap2) %>% 
+  arrange(desc(sum_kvant_all)) %>% 
+  mutate(sum = sum(sum_kvant_all),
+         percent = 100 * (sum_kvant_all / sum)) %>% 
+  mutate(group = ifelse(percent > 1, ">1% av totala landningarna", "<1% av totala landningarna"))
+
+lb_gear <- lb_gear %>% left_join(order, by = "Redskap2")
+
+p1 <- ggplot(lb_gear %>% filter(group == ">1% av totala landningarna"),
+       aes(year, sum_kvant/1000000, fill = Redskap2, order = sum_kvant)) +
+  #geom_bar(stat = "identity") +
+  geom_area() +
+  scale_fill_manual(values = pal_long, name = "") + 
+  theme_sleek(base_size = 9) +
+  theme(legend.position = c(0.8, 0.93),
+        legend.direction = "horizontal",
+        legend.spacing.y = unit(0, 'cm'),
+        legend.spacing.x = unit(0.2, 'cm'),
+        legend.key.size = unit(0.4, 'cm')) +
+  labs(y = "Landningar (tusen ton)", x = "") + 
+  guides(fill = guide_legend(nrow = 2)) +
+  coord_cartesian(expand = 0) + 
+  facet_wrap(~group)
+
+p2 <- ggplot(lb_gear %>% filter(group == "<1% av totala landningarna"),
+       aes(year, sum_kvant/1000000, fill = Redskap2, order = sum_kvant)) +
+  #geom_bar(stat = "identity") +
+  geom_area() +
+  scale_fill_manual(values = rev(pal_long), name = "") + 
+  theme_sleek(base_size = 9) +
+  theme(legend.position = c(0.68, 0.93),
+        legend.direction = "horizontal",
+        legend.spacing.y = unit(0, 'cm'),
+        legend.spacing.x = unit(0.2, 'cm'),
+        legend.key.size = unit(0.4, 'cm')) +
+  labs(y = "Landningar (tusen ton)", x = "År") + 
+  guides(fill = guide_legend(nrow = 2)) +
+  coord_cartesian(expand = 0) + 
+  facet_wrap(~group)
+
+landings_gear <- p1 / p2
+  
+ggsave(plot = landings_gear, "figures/entire_fleet/landings_gear.png", width = 17, height = 20, units = "cm")
+```
+
+![Fig. 1.4.5 Redskap som används i det svenska yrkesfisket på kusten och i havet över tid. Andelen är beräknat på landningsvikt.](figures/entire_fleet/landings_gear.png)
+
+```{r}
+#| code-fold: false
+
+# TODO: Days-at-at by gear?
+```
+
+### Landings by species
+
+```{r 1.4.8}
+#| message: false
+
+lb_spec <- lb %>% 
+  drop_na(FNAMNSVE) %>% 
+  filter(year > 2015) %>% 
+  summarise(sum_kvant = sum(KVANT), .by = c(year, FNAMNSVE))
+
+order <- lb_spec %>% 
+  summarise(sum_kvant_all = sum(sum_kvant), .by = FNAMNSVE) %>% 
+  arrange(desc(sum_kvant_all)) %>% 
+  mutate(sum = sum(sum_kvant_all),
+         percent = 100 * (sum_kvant_all / sum))
+
+lb_spec <- lb_spec %>% left_join(order, by = "FNAMNSVE")
+
+landings_top_12_sp <- ggplot(lb_spec %>% filter(FNAMNSVE %in% order$FNAMNSVE[1:12]),
+       aes(year, sum_kvant/1000000, fill = FNAMNSVE)) +
+  geom_area() +
+  scale_fill_brewer(palette = "Set3", name = "") +
+  #scale_fill_manual(values = sp_palette, name = "") + 
+  theme_sleek(base_size = 9) +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.spacing.y = unit(0, 'cm'),
+        legend.spacing.x = unit(0.2, 'cm'),
+        legend.key.size = unit(0.3, 'cm')) +
+  labs(y = "Landningar (tusen ton)", x = "År") + 
+  guides(fill = guide_legend(nrow = 2)) +
+  coord_cartesian(expand = 0)
+
+ggsave(plot = landings_top_12_sp, "figures/entire_fleet/landings_top_12_sp.png", width = 17, height = 14, units = "cm")
+
+# All species more than 0.001
+lb_spec_all <- lb_spec %>% 
+  summarise(sum_kvant_mean = mean(sum_kvant), .by = FNAMNSVE) %>% 
+  arrange(desc(sum_kvant_mean))
+
+landings_sp <- ggplot(lb_spec_all %>% filter(FNAMNSVE %in% lb_spec_all$FNAMNSVE[1:30]),
+       aes(reorder(FNAMNSVE, sum_kvant_mean), sum_kvant_mean/1000000)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  coord_flip(expand = 0) +
+  labs(y = "Landningar (tusen ton)", x = "")
+
+ggsave(plot = landings_sp, "figures/entire_fleet/landings_sp.png", width = 17, height = 14, units = "cm")
+```
+
+![Fig. 1.4.7 De vanligaste 12 landade arter i det svenska yrkesfisket på kusten och i havet över tid.](figures/entire_fleet/landings_top_12_sp.png)
+
+![Fig. 1.4.8 De vanligaste 30 landade arterna (2016-2022) i det svenska yrkesfisket på kusten och i havet.](figures/entire_fleet/landings_sp.png)
+
+```{r}
+#| code-fold: false
+
+# TODO: By value also? all species or just the ones you can actually see?
+```
+
+### Landings map for top 12 species
+
+```{r 1.4.9}
+#| message: false
+
+# Find which are the top 5 species
+lb_spec_12 <- lb %>% 
+  drop_na(FNAMNSVE) %>% 
+  summarise(sum_kvant = sum(KVANT), .by = FNAMNSVE) %>% 
+  arrange(desc(sum_kvant))
+
+polygon_counts_sp <- lb_sf %>%
+  filter(FNAMNSVE %in% c(lb_spec_12$FNAMNSVE[1:12])) %>% 
+  filter(year > 2015) %>% 
+  mutate(polygon_id = as.character(st_intersects(geometry, honeycomb_grid_sf))) %>% 
+  group_by(polygon_id, FNAMNSVE) %>% # FIXME: want to do it for another year?
+  summarise(sum_kvant = sum(KVANT)) %>% 
+  st_drop_geometry()
+
+polygon_sum_sp <- honeycomb_grid_sf %>% 
+  left_join(polygon_counts_sp, by = "polygon_id") %>% 
+  drop_na(sum_kvant)
+
+# Add proportion by species to make the spatial pattern more visible
+polygon_sum_sp <- polygon_sum_sp %>% 
+  mutate(sum_kvant_prop = sum_kvant / max(sum_kvant), .by = FNAMNSVE)
+
+# All years but Morocco & Arctic excluded for visibility
+landings_sp_map <- plot_map_m +
+  geom_sf(data = polygon_sum_sp, aes(fill = sum_kvant_prop), color = NA) +
+  scale_fill_viridis(trans = "sqrt", option = "plasma",
+                     na.value = "yellow",
+                     limits = c(0, quantile(polygon_sum_sp$sum_kvant_prop, 0.99))
+                     ) +
+  geom_sf(color = "gray70") +
+  facet_wrap(~FNAMNSVE) +
+  # TODO other way to trim plot?
+  xlim(-8.2, 25.5) +
+  ylim(51.5, 68) +
+  guides(fill = "none") + 
+  theme(axis.text.x = element_text(angle = 90))
+
+ggsave(plot = landings_sp_map, paste0(home, "/figures/entire_fleet/landings_sp_map.png"), width = 17, height = 17, units = "cm")
+```
+
+![Fig. 1.4.9 Utbredning av fiskeplatser (rapporterade landningar) för de 12 ekonomiskt viktigaste arterna i svenska yrkesfisket på kusten och i havet 2019-2022. Skalan är relativ och inte jämförbar mellan arter i absoluta tal](figures/entire_fleet/landings_sp_map.png)
+
+```{r}
+#| code-fold: false
+
+# TODO: Same as above but for top 12 commercially?
+```
+
+### Landings for top 12 species by month
+
+```{r 1.4.11}
+lb_spec <- lb %>% 
+  drop_na(FNAMNSVE) %>% 
+  summarise(sum_kvant = sum(KVANT), .by = c(month_name, FNAMNSVE))
+
+order <- lb_spec %>% 
+  summarise(sum_kvant_all = sum(sum_kvant), .by = FNAMNSVE) %>% 
+  arrange(desc(sum_kvant_all)) %>% 
+  mutate(sum = sum(sum_kvant_all),
+         percent = 100 * (sum_kvant_all / sum)) %>% 
+  slice(1:12)
+
+lb_spec <- lb_spec %>% left_join(order, by = "FNAMNSVE")
+
+# Add groups to split plot
+lb_spec_split <- lb_spec %>%
+  filter(FNAMNSVE %in% order$FNAMNSVE) %>% 
+  mutate(sp = ifelse(FNAMNSVE %in% c("Skarpsill", "Tobis", "Sill/Strömming",
+                                     "Makrill", "Siklöja", "Blåvitling"), "Pelagic", "Demersal"))
+# FIXME: Gråsej? Which group?
+
+# For setting ranges
+ymax <- lb_spec_split %>% 
+  summarise(month_sum = sum(sum_kvant)/1000000, .by = c(month_name, sp)) %>% 
+  group_by(sp) %>% 
+  filter(month_sum == max(month_sum))
+  
+polar_theme <- ggplot() +
+  theme(panel.background = element_rect(fill = "white", color = "white"),
+        panel.border = element_blank(),
+        panel.grid = element_blank(),
+        panel.grid.major = element_line(color = "grey95"),
+        axis.title = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        legend.position = "bottom",
+        legend.box.spacing = unit(0, "pt")) +
+  coord_polar() +
+  guides(fill = guide_legend(nrow = 2))
+
+hlines_pel <- tibble(y = seq(0,
+                             ymax %>% filter(sp == "Pelagic") %>% pull(month_sum),
+                             length.out = 3)) %>%
+  round(digits = -2) %>%
+  filter(!y == min(y))
+
+pel <- polar_theme + 
+  geom_hline(aes(yintercept = y), hlines_pel, color = "grey80") +
+  scale_fill_brewer(palette = "Set3", name = "") +
+  scale_y_continuous(limits = c(-50, (ymax %>% filter(sp == "Pelagic") %>% pull(month_sum))*1.1),
+                     expand = c(0, 0)) + 
+  geom_col(data = lb_spec_split %>% filter(sp == "Pelagic"), 
+           aes(x = month_name, y = sum_kvant/1000000, fill = FNAMNSVE)) +
+  # Annotate custom scale inside plot
+  annotate(x = "December", y = hlines_pel$y[1]*0.8, label = paste(hlines_pel$y[1], "tusen ton"),
+           geom = "text", color = "grey50", size = 3) +
+  annotate(x = "December", y = hlines_pel$y[2]*0.9, label = paste(hlines_pel$y[2], "tusen ton"),
+           geom = "text", color = "grey50", size = 3) + 
+  ggtitle("Pelagiska")
+
+
+hlines_dem <- tibble(y = seq(0,
+                             ymax %>% filter(sp == "Demersal") %>% pull(month_sum),
+                             length.out = 3)) %>%
+  round(digits = -1) %>%
+  filter(!y == min(y))
+
+dem <- polar_theme + 
+  geom_hline(aes(yintercept = y), hlines_dem, color = "grey80") +
+  scale_fill_brewer(palette = "Set3", name = "") +
+  scale_y_continuous(limits = c(-5, (ymax %>% filter(sp == "Demersal") %>% pull(month_sum))*1.1),
+                     expand = c(0, 0)) + 
+  geom_col(data = lb_spec_split %>% filter(sp == "Demersal"), 
+           aes(x = month_name, y = sum_kvant/1000000, fill = FNAMNSVE)) +
+  # Annotate custom scale inside plot
+  annotate(x = "December", y = hlines_dem$y[1]*0.8, label = paste(hlines_dem$y[1], "tusen ton"),
+           geom = "text", color = "grey50", size = 3) +
+  annotate(x = "December", y = hlines_dem$y[2]*0.9, label = paste(hlines_dem$y[2], "tusen ton"),
+           geom = "text", color = "grey50", size = 3) + 
+  ggtitle("Demersala")
+
+
+monthly_polar <- pel + dem
+
+ggsave(plot = monthly_polar, paste0(home, "/figures/entire_fleet/monthly_polar.png"), width = 22, height = 15, units = "cm")
+```
+
+![Fig. 1.4.11 Landningsvikt per art och månad av de 12 vanligaste arterna baserat landningskvantitet (2003--2022)](figures/entire_fleet/monthly_polar.png)
+
+<!-- ![Tabell 1.4.2. Uppdelning av svenskt fiske i fisken enligt redskap och fisketyp. En utförlig beskrivning finns i avsnitt 5: Appendix (Fisken, definitioner och redskap).](figures/fishery_table.png){width=80%} -->
+
+```{r 1.4.16}
+lb_fish_land_old <- lb %>% 
+  filter(year < 2016) %>% 
+  summarise(sum_kvant = sum(KVANT)/1000000, .by = fishery) %>% 
+  drop_na() %>%
+  mutate(tp = "2003-2015") %>% 
+  arrange(desc(sum_kvant))
+
+lb_fish_land_new <- lb %>% 
+  filter(year > 2015) %>% 
+  summarise(sum_kvant = sum(KVANT)/1000000, .by = fishery) %>% 
+  drop_na() %>%
+  mutate(tp = "2015-2022") %>% 
+  arrange(desc(sum_kvant))
+
+fish_land_old <- ggplot(lb_fish_land_old, aes(tp, sum_kvant, fill = factor(fishery, levels = rev(fishery)))) +
+  geom_col(position = "stack") +
+  scale_fill_viridis(discrete = TRUE, name = "", option = "mako") +
+  facet_zoom(ylim = c(sum(lb_fish_land_old[1:4, ]$sum_kvant), sum(lb_fish_land_old$sum_kvant))) +
+  geom_hline(yintercept = sum(lb_fish_land_old[1:4, ]$sum_kvant), linetype = 2, linewidth = 0.5, alpha = 0.5) +
+  geom_hline(yintercept = sum(lb_fish_land_old$sum_kvant), linetype = 2, linewidth = 0.5, alpha = 0.5) +
+  theme(strip.background = element_rect(fill = "grey70", colour = "grey70"),
+        legend.position = "bottom") +
+  labs(x = "", y = "Landningar (tusen ton)") +
+  guides(fill = guide_legend(ncol = 2)) +
+  NULL
+
+ggsave(plot = fish_land_old, paste0(home, "/figures/entire_fleet/fish_land_old.png"), width = 17, height = 17, units = "cm")
+
+fish_land_new <- ggplot(lb_fish_land_new, aes(tp, sum_kvant, fill = factor(fishery, levels = rev(fishery)))) +
+  geom_col(position = "stack") +
+  scale_fill_viridis(discrete = TRUE, name = "", option = "mako") +
+  facet_zoom(ylim = c(sum(lb_fish_land_new[1:4, ]$sum_kvant), sum(lb_fish_land_new$sum_kvant))) +
+  geom_hline(yintercept = sum(lb_fish_land_new[1:4, ]$sum_kvant), linetype = 2, linewidth = 0.5, alpha = 0.5) +
+  geom_hline(yintercept = sum(lb_fish_land_new$sum_kvant), linetype = 2, linewidth = 0.5, alpha = 0.5) +
+  theme(strip.background = element_rect(fill = "grey70", colour = "grey70"),
+        legend.position = "bottom") +
+  labs(x = "", y = "Landningar (tusen ton)") +
+  guides(fill = guide_legend(ncol = 2)) +
+  NULL
+
+ggsave(plot = fish_land_new, paste0(home, "/figures/entire_fleet/fish_land_new.png"), width = 17, height = 17, units = "cm")
+```
+
+![Fig. 1.4.16 Svenskt yrkesfiske i havet och på kusten, landningar per fiskeri (2016-2022)](figures/entire_fleet/fish_land_new.png)
+
+![Fig. 1.4.16 Svenskt yrkesfiske i havet och på kusten, landningar per fiskeri (2003-2015)](figures/entire_fleet/fish_land_old.png)
+
+```{r 1.5.3}
+order <- lb %>% 
+  filter(year > 2015) %>% 
+  drop_na(FNAMNSVE) %>% 
+  summarise(sum_kvant_all = sum(KVANT), .by = FNAMNSVE) %>% 
+  mutate(sum = sum(sum_kvant_all),
+         percent = 100 * (sum_kvant_all / sum)) %>% 
+  arrange(desc(percent)) %>% 
+  slice(1:12)
+
+lb_fish_sp <- lb %>% 
+  filter(!year == 2022) %>% 
+  mutate(species = ifelse(!FNAMNSVE %in% order$FNAMNSVE[1:12], " Övriga", FNAMNSVE)) %>% 
+  summarise(sum_kvant = sum(KVANT)/1000000, .by = c(fishery, species)) %>% 
+  drop_na()
+
+pal_sp <- brewer.pal(n = 12, name = "Set3")
+
+#sp_palette_other <- c(sp_palette, Övriga = "Black")
+
+fish_sp <- ggplot(lb_fish_sp, 
+                  aes(sum_kvant, fishery, fill = species)) +
+  geom_bar(stat = "identity") + 
+  scale_fill_manual(values = c("black", pal_sp), name = "") +
+  #scale_fill_manual(values = sp_palette_other, name = "") +
+  scale_x_continuous(transform = "sqrt") +
+  labs(y = "Landningar (tusen ton)", x = "") + 
+  guides(fill = guide_legend(nrow = 4)) + 
+  theme(legend.position = "bottom",
+        plot.margin = unit(c(0.1, 0.5, 0.1, 0.1), "cm"))
+
+ggsave(plot = fish_sp, paste0(home, "/figures/entire_fleet/fish_sp.png"), width = 17, height = 12, units = "cm")
+```
+
+![Fig. 1.5.3. Kvantitet och artsammansättning i olika fisken (2016-2022). Notera att x-axeln är sqrt](figures/entire_fleet/fish_sp.png)
+
+# Discards
+
+### All fisheries
+
+```{r 1.5.2}
+discard_sum <- discard %>% 
+  summarise(tonnes = sum(discards) / 1000000, .by = c(year, fishery)) %>% 
+  mutate(type = "Utkast") %>% 
+  mutate(keep = ifelse(year == 2015 & fishery == "Bottentrålfiske efter torsk i Östersjön", "N", "Y")) %>% 
+  filter(keep == "Y") %>% 
+  dplyr::select(-keep)
+
+# For the fisheries I have discard from, what are the landings
+landing_sum <- lb %>% 
+  filter(fishery %in% unique(discard_sum$fishery)) %>%
+  filter(year %in% unique(discard_sum$year)) %>% 
+  summarise(tonnes = sum(KVANT) / 1000000, .by = c(year, fishery)) %>% 
+  mutate(type = "Landningar") %>% 
+  mutate(keep = ifelse(year == 2015 & fishery == "Bottentrålfiske efter torsk i Östersjön", "N", "Y")) %>% 
+  filter(keep == "Y") %>% 
+  dplyr::select(-keep)
+  
+discard_sum <- discard_sum %>% bind_rows(landing_sum)
+
+# Plot by fishery over time
+discard_all_plot <- ggplot(discard_sum %>% filter(!year %in% c(2020, 2021)),
+                           aes(year, tonnes, fill = factor(type, levels = c("Utkast", "Landningar")))) +
+  geom_bar(stat = "identity", alpha = 0.9) + 
+  geom_text(data = md, size = 2.5, 
+            aes(year, y, label = label), inherit.aes = FALSE, angle = 90,
+            color = "grey50", hjust = -0.05) +
+  scale_fill_manual(values = c("gray20", "gray80"), name = "") + 
+  theme_sleek(base_size = 9) +
+  theme(legend.position = c(0.75, 0.14),
+        legend.direction = "horizontal",
+        legend.spacing.y = unit(0, 'cm'),
+        legend.spacing.x = unit(0.2, 'cm'),
+        legend.key.size = unit(0.3, 'cm')) +
+  labs(y = "Fångst (tusen ton)", x = "") + 
+  guides(fill = guide_legend(nrow = 3)) +
+  facet_wrap(~fishery, ncol = 2, scales = "free_y") +
+  coord_cartesian(expand = 0)
+  
+ggsave(plot = discard_all_plot, "figures/entire_fleet/discards.png", width = 17, height = 16, units = "cm")
+```
+
+![Fig. 1.5.2. Utkast per fiske (2008-2022).](figures/entire_fleet/discards.png)
+
+### Discard by species
+
+```{r 1.5.2 b}
+# All species more than 0.001
+discard_sum <- discard %>% 
+  summarise(sum_disc = sum(discards), .by = Art) %>% 
+  arrange(desc(sum_disc)) %>% 
+  slice(1:30)
+
+discard_sp <- ggplot(discard_sum,
+       aes(reorder(Art, sum_disc), sum_disc/1000000)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  coord_flip(expand = 0) +
+  labs(y = "Utkast (tusen ton)", x = "")
+
+ggsave(plot = landings_sp, "figures/entire_fleet/discard_sp.png", width = 17, height = 14, units = "cm")
+```
+
+![Fig. 1.5.2. Utkast per art.](figures/entire_fleet/discard_sp.png)
+
+### Proportion of catches that are discards
+
+```{r}
+discard_trends <- discard %>% 
+  summarise(sum_disc = sum(discards),
+            sum_kvant = sum(KVANT), .by = c(Art, year)) %>% 
+  mutate(prop = sum_disc / (sum_kvant + sum_disc)) %>% 
+  arrange(desc(sum_disc)) %>% 
+  drop_na(prop) %>% 
+  filter(Art %in% discard_sum$Art) %>% 
+  # remove species with lots of gaps in time
+  mutate(n_year = length(unique(year)), .by = Art) %>% 
+  filter(n_year > 8)
+
+discard_ratio_heat <- ggplot(discard_trends, aes(year, reorder(Art, prop), fill = prop)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis(option = "magma") +
+  geom_text(data = md %>% filter(fishery == head(fishery, 1)), size = 3.5, 
+            aes(year, Inf, label = label), inherit.aes = FALSE, angle = 90,
+            color = "grey50", hjust = 2) +
+  coord_cartesian(expand = 0) +
+  labs(y = "", x = "År", fill = "Andel utkast av fångst") + 
+  guides(fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
+  theme(legend.position = "bottom", 
+        legend.key.width = unit(1, "cm"))
+
+ggsave(plot = discard_ratio_heat, "figures/entire_fleet/discard_ratio_heat.png", width = 17, height = 11, units = "cm")
+```
+
+![1.5.2. Andel utkast över tid per art för arter med mer än 8 år av data.](figures/entire_fleet/discard_ratio_heat.png)
+
+# Fishery-specific plots
+
+Loop through all fisheries and make standard plots
+
+```{r}
+lb_clean <- lb %>%
+  drop_na(fishery)
+
+for(i in unique(lb_clean$fishery)) {
+  
+  lb_sub <- lb_clean %>% filter(fishery == i)
+  
+  discard_sub <- discard %>% filter(fishery == i)
+  
+  lb_spec_key <- lb_sub %>% 
+    drop_na(FNAMNSVE) %>% 
+    summarise(sum_kvant = sum(KVANT), .by = FNAMNSVE) %>% 
+    arrange(desc(sum_kvant)) %>% 
+    mutate(sum = sum(sum_kvant),
+           percent = (sum_kvant / sum) * 100) %>% 
+    filter(percent > 0.5) %>% # both percent and top 5 if more than 5...
+    slice(1:5)
+  
+  # Map plot
+  polygon_counts_sub <- lb_sf %>%
+    mutate(tp = ifelse(year > 2015, "2016-2022", "2003-2015")) %>% 
+    mutate(polygon_id = as.character(st_intersects(geometry, honeycomb_grid_sf))) %>%
+    filter(fishery == i) %>%
+    filter(FNAMNSVE %in% lb_spec_key$FNAMNSVE) %>%
+    group_by(tp, polygon_id, FNAMNSVE) %>%
+    summarise(sum_kvant = sum(KVANT) / 1000000) %>%
+    st_drop_geometry()
+  
+  polygon_sum_sub <- honeycomb_grid_sf %>%
+    left_join(polygon_counts_sub, by = "polygon_id") %>%
+    drop_na(sum_kvant)
+  
+  plot_map_l +
+    geom_sf(data = polygon_sum_sub, aes(fill = sum_kvant), color = NA) +
+    scale_fill_viridis(trans = "sqrt", option = "plasma",
+                       na.value = "yellow",
+                       limits = c(0, quantile(polygon_sum_sub$sum_kvant, 0.99)),
+                       name = "Landningar (tusen ton)") +
+    geom_sf(color = "gray70") +
+    facet_grid(tp ~ FNAMNSVE) +
+    # xlim(-8.2, 25.5) +
+    # ylim(51.5, 68) +
+    # Use limits closer to data
+    xlim(c(min(lb_sub$lon), max(lb_sub$lon))) +
+    ylim(c(min(lb_sub$lat), max(lb_sub$lat))) +
+    guides(fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
+    theme(axis.text.x = element_text(angle = 90),
+          legend.text = element_text(size = 6),
+          legend.title = element_text(size = 7),
+          legend.position = "bottom",
+          legend.key.height = unit(0.2, "cm"),
+          legend.key.width = unit(0.8, "cm")) +
+    ggtitle(i)
+  
+  ggsave(paste0(home, "/figures/fishery/", i, "/", "_map.png"),
+         width = 17, height = 17, units = "cm")
+
+  
+  
+  # Fleet size-distribution
+  trend_sub <- lb_sub %>% 
+    drop_na(LÄNGD) %>% 
+    filter(LÄNGD > 0) %>% 
+    mutate(size_gr = ifelse(LÄNGD > 10, ">10 m", "<10 m")) %>% 
+    summarise(n_vessels = length(unique(BATNAMN)), .by = c(year, size_gr))
+  
+  ggplot(trend_sub, aes(year, n_vessels, fill = size_gr)) + 
+    geom_area() + 
+    coord_cartesian(expand = 0) +
+    scale_fill_manual(values = c("grey40", "grey70"), name = "Fartygslängd") + 
+    labs(y = "Antal fartyg", x = "År") + 
+    theme(legend.position = "bottom") +
+    guides(color = guide_legend(title.position = "top", title.hjust = 0.5)) +
+    ggtitle(i)
+    
+    ggsave(paste0(home, "/figures/fishery/", i, "/", "_size.png"),
+           width = 17, height = 11, units = "cm")
+  
+    
+  
+  # Landings/effort by species and fishery 
+  lb_spec_sub <- lb_sub %>% 
+    drop_na(FNAMNSVE) %>% 
+    summarise(sum_kvant = sum(KVANT), .by = c(year, FNAMNSVE))
+  
+  order_sub <- lb_spec_sub %>% 
+    summarise(sum_kvant_all = sum(sum_kvant), .by = FNAMNSVE) %>% 
+    arrange(desc(sum_kvant_all)) %>% 
+    mutate(sum = sum(sum_kvant_all),
+           percent = (sum_kvant_all / sum) * 100) %>% 
+    filter(percent > 0.5)
+  
+  lb_spec_sub <- lb_spec_sub %>% left_join(order_sub, by = "FNAMNSVE")
+  
+  ggplot(lb_spec_sub %>% filter(FNAMNSVE %in% order_sub$FNAMNSVE[1:12]),
+         aes(year, sum_kvant/1000000, fill = FNAMNSVE)) +
+    #geom_bar(stat = "identity") +
+    geom_area() +
+    scale_fill_brewer(palette = "Set3", name = "") + 
+    #scale_fill_manual(values = sp_palette, name = "") + 
+    theme_sleek(base_size = 9) +
+    theme(legend.position = "bottom",
+          legend.direction = "horizontal",
+          legend.spacing.y = unit(0, 'cm'),
+          legend.spacing.x = unit(0.2, 'cm'),
+          legend.key.size = unit(0.4, 'cm')) +
+    labs(y = "Landningar (tusen ton)", x = "År") + 
+    guides(fill = guide_legend(nrow = 2)) +
+    coord_cartesian(expand = 0) +
+    ggtitle(i)
+  
+  ggsave(paste0(home, "/figures/fishery/", i, "/", "_species.png"),
+         width = 17, height = 11, units = "cm")
+  
+  
+  
+  # Seasonal distribution of fisheries
+  lb_spec_month_sub <- lb_sub %>% 
+    summarise(sum_kvant = sum(KVANT), .by = c(month_name, FNAMNSVE))
+  
+  order_sub <- lb_spec_month_sub %>% 
+    summarise(sum_kvant_all = sum(sum_kvant), .by = FNAMNSVE) %>% 
+    arrange(desc(sum_kvant_all)) %>% 
+    mutate(sum = sum(sum_kvant_all),
+           percent = 100 * (sum_kvant_all / sum)) %>% 
+    filter(percent > 0.5) %>%
+    slice(1:12)
+    
+  lb_spec_month_sub <- lb_spec_month_sub %>% 
+    filter(FNAMNSVE %in% order_sub$FNAMNSVE)
+  
+  lb_spec_month_sub <- lb_spec_month_sub %>% left_join(order, by = "FNAMNSVE")
+  
+  ymax <- lb_spec_month_sub %>% 
+    filter(FNAMNSVE %in% order_sub$FNAMNSVE) %>% 
+    summarise(month_sum = sum(sum_kvant)/1000, .by = month_name) %>% 
+    filter(month_sum == max(month_sum)) %>% 
+    pull(month_sum)
+  
+  hlines <- tibble(y = seq(0, ymax, length.out = 4)) %>% round(digits = -2) %>% filter(!y == min(y))
+  
+  polar_theme + 
+    geom_hline(aes(yintercept = y), hlines, color = "grey80") +
+    scale_fill_brewer(palette = "Set3", name = "") + 
+    #scale_fill_manual(values = sp_palette, name = "") + 
+    scale_y_continuous(limits = c(-50, ymax), expand = c(0, 0)) + 
+    geom_col(data = lb_spec_month_sub, 
+             aes(x = month_name, y = sum_kvant/1000, fill = FNAMNSVE), alpha = .95) +
+    # Annotate custom scale inside plot
+    annotate(x = "December", y = hlines$y[1]*0.8, label = paste(hlines$y[1], "ton"),
+             geom = "text", color = "grey50", size = 3) +
+    annotate(x = "December", y = hlines$y[2]*0.9, label = paste(hlines$y[2], "ton"),
+             geom = "text", color = "grey50", size = 3) +
+    annotate(x = "December", y = hlines$y[3]*0.93, label = paste(hlines$y[3], "ton"),
+             geom = "text", color = "grey50", size = 3) +
+    ggtitle(i)
+  
+  ggsave(paste0(home, "/figures/fishery/", i, "/", "_season.png"),
+         width = 15, height = 15, units = "cm")
+
+  
+  
+  # landings/effort by gears or sub-fisheries within fishery 
+  lb_gear_sub <- lb_sub %>% 
+    drop_na(Redskap2) %>% 
+    summarise(sum_kvant = sum(KVANT), .by = c(year, Redskap2))
+  
+  ggplot(lb_gear_sub, aes(year, sum_kvant/1000, fill = Redskap2)) +
+    geom_area() +
+    #geom_bar(stat = "identity") +
+    scale_fill_manual(values = pal_long, name = "") + 
+    theme_sleek(base_size = 9) +
+    theme(legend.position = "bottom",
+          legend.direction = "horizontal",
+          legend.spacing.y = unit(0, 'cm'),
+          legend.spacing.x = unit(0.2, 'cm'),
+          legend.key.size = unit(0.4, 'cm')) +
+    labs(y = "Landningar (ton)", x = "") + 
+    guides(fill = guide_legend(nrow = 2)) +
+    coord_cartesian(expand = 0) +
+    ggtitle(i)
+  
+  ggsave(paste0(home, "/figures/fishery/", i, "/", "_gear.png"),
+         width = 17, height = 11, units = "cm")
+  
+  
+  
+  # Discard species by fishery
+  discard_sub <- discard_sub %>% 
+    mutate(fishery_discards_sum = sum(discards), .by = fishery) %>% 
+    mutate(percent = (discards / fishery_discards_sum) * 100, .by = Art) %>% 
+    filter(percent > 0.5) %>% 
+    summarise(discards = sum(discards) / 1000, .by = c(year, Art))
+  
+  # The reason we dont do slice typ 12 is because we want it per gear 
+  nsp <- length(unique(discard_sub$Art))
+  colors <- colorRampPalette(brewer.pal(name = "Set3", n = 12))(nsp)
+  
+  ggplot(discard_sub, aes(year, discards, fill = Art)) +
+    geom_bar(stat = "identity") +
+    geom_text(data = md %>% filter(fishery == i), size = 2.5, 
+              aes(year, y, label = label), inherit.aes = FALSE, angle = 90,
+              color = "grey50", hjust = -0.05) +
+    scale_fill_manual(values = colors) +
+    #scale_fill_manual(values = sp_palette) + 
+    theme_sleek(base_size = 9) +
+    theme(legend.position = "bottom",
+          legend.direction = "horizontal",
+          legend.spacing.y = unit(0, 'cm'),
+          legend.spacing.x = unit(0.2, 'cm'),
+          legend.key.size = unit(0.3, 'cm')) +
+    labs(y = "Utkast (ton)", x = "") + 
+    guides(fill = guide_legend(nrow = 2, title.position = "top", title.hjust = 0.5)) +
+    scale_y_continuous(expand = c(0, 0)) + 
+    scale_x_continuous(breaks = c(2012, 2016, 2020)) +
+    ggtitle(i)
+  
+    ggsave(paste0(home, "/figures/fishery/", i, "/", "_discards.png"),
+           width = 17, height = 11, units = "cm")
+
+}
+
+```
+
+## Active gears
+### Pelagic fishing with active gear
+
+![](figures/fishery/Pelagiskt fiske med aktiva redskap/_map.png)
+
+![](figures/fishery/Pelagiskt fiske med aktiva redskap/_season.png)
+
+![](figures/fishery/Pelagiskt fiske med aktiva redskap/_species.png)
+
+![](figures/fishery/Pelagiskt fiske med aktiva redskap/_gear.png)
+
+![](figures/fishery/Pelagiskt fiske med aktiva redskap/_size.png)
+
+![](figures/fishery/Pelagiskt fiske med aktiva redskap/_discards.png)
+
+
+```{r}
+#| code-fold: false
+
+# TODO: coastal/pelagic
+```
+
+### Shrimp fisheries in Skagerrak, Kattegatt and the North Sea
+
+![](figures/fishery/Räkfiske i Skagerrak, Kattegatt och Nordsjön/_map.png)
+
+![](figures/fishery/Räkfiske i Skagerrak, Kattegatt och Nordsjön/_season.png)
+
+![](figures/fishery/Räkfiske i Skagerrak, Kattegatt och Nordsjön/_species.png)
+
+![](figures/fishery/Räkfiske i Skagerrak, Kattegatt och Nordsjön/_gear.png)
+
+![](figures/fishery/Räkfiske i Skagerrak, Kattegatt och Nordsjön/_size.png)
+
+![](figures/fishery/Räkfiske i Skagerrak, Kattegatt och Nordsjön/_discards.png)
+
+```{r}
+#| code-fold: false
+
+# TODO: gear selectivity?
+```
+
+
+```{r}
+#| code-fold: false
+
+# TODO: protected areas
+# TODO: gear selectivity?
+# TODO: Kattegatt & Skagerak separately
+```
+
+### Bottom trawl fisheries for nephrops and fish in Skagerrak and Kattegatt
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt/_map.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt/_season.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt/_species.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt/_gear.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt/_size.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt/_discards.png
+
+```{r}
+#| code-fold: false
+
+# TODO: Size distribution of discards by gear selectivity? Check the efforts in Baltic Sea
+```
+
+### Bottom trawl fisheries for nephrops and fish in the North Sea
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Nordsjön/_map.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Nordsjön/_season.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Nordsjön/_species.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Nordsjön/_gear.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Nordsjön/_size.png)
+
+![](figures/fishery/Bottentrålfiske efter kräfta och fisk i Nordsjön/_discards.png)
+
+### Vendace fisheries with bottom trawl
+
+![](figures/fishery/Fiske efter siklöja med bottentrål/_map.png)
+
+![](figures/fishery/Fiske efter siklöja med bottentrål/_season.png)
+
+![](figures/fishery/Fiske efter siklöja med bottentrål/_species.png)
+
+![](figures/fishery/Fiske efter siklöja med bottentrål/_gear.png)
+
+![](figures/fishery/Fiske efter siklöja med bottentrål/_size.png)
+
+![](figures/fishery/Fiske efter siklöja med bottentrål/_discards.png)
+
+### Bottom trawl fisheries for cod in the Baltic Sea
+
+![](figures/fishery/Bottentrålfiske efter torsk i Östersjön/_map.png)
+
+![](figures/fishery/Bottentrålfiske efter torsk i Östersjön/_season.png)
+
+![](figures/fishery/Bottentrålfiske efter torsk i Östersjön/_species.png)
+
+![](figures/fishery/Bottentrålfiske efter torsk i Östersjön/_gear.png)
+
+![](figures/fishery/Bottentrålfiske efter torsk i Östersjön/_size.png)
+
+![](figures/fishery/Bottentrålfiske efter torsk i Östersjön/_discards.png)
+
+```{r}
+#| code-fold: false
+
+# TODO: Landings by stock
+```
+
+## Passive gears
+### Passive gear fisheries in the Baltic Sea
+
+![](figures/fishery/Fiske med passiva redskap i centrala och södra Östersjön/_map.png)
+
+![](figures/fishery/Fiske med passiva redskap i centrala och södra Östersjön/_season.png)
+
+![](figures/fishery/Fiske med passiva redskap i centrala och södra Östersjön/_species.png)
+
+![](figures/fishery/Fiske med passiva redskap i centrala och södra Östersjön/_gear.png)
+
+![](figures/fishery/Fiske med passiva redskap i centrala och södra Östersjön/_size.png)
+
+![](figures/fishery/Fiske med passiva redskap i centrala och södra Östersjön/_discards.png)
+
+### Passive gear fisheries in the northern Baltic Sea
+
+![](figures/fishery/Fiske med passiva redskap i norra Östersjön/_map.png)
+
+![](figures/fishery/Fiske med passiva redskap i norra Östersjön/_season.png)
+
+![](figures/fishery/Fiske med passiva redskap i norra Östersjön/_species.png)
+
+![](figures/fishery/Fiske med passiva redskap i norra Östersjön/_gear.png)
+
+![](figures/fishery/Fiske med passiva redskap i norra Östersjön/_size.png)
+
+![](figures/fishery/Fiske med passiva redskap i norra Östersjön/_discards.png)
+
+### Fisheries in the Öresund
+
+![](figures/fishery/Fiske i Öresund/_map.png)
+
+![](figures/fishery/Fiske i Öresund/_season.png)
+
+![](figures/fishery/Fiske i Öresund/_species.png)
+
+![](figures/fishery/Fiske i Öresund/_gear.png)
+
+![](figures/fishery/Fiske i Öresund/_size.png)
+
+![](figures/fishery/Fiske i Öresund/_discards.png)
+
+### Passive gear fisheries on the West coast
+
+![](figures/fishery/Fiske med passiva redskap i Skagerrak och Kattegatt/_map.png)
+
+![](figures/fishery/Fiske med passiva redskap i Skagerrak och Kattegatt/_season.png)
+
+![](figures/fishery/Fiske med passiva redskap i Skagerrak och Kattegatt/_species.png)
+
+![](figures/fishery/Fiske med passiva redskap i Skagerrak och Kattegatt/_gear.png)
+
+![](figures/fishery/Fiske med passiva redskap i Skagerrak och Kattegatt/_size.png)
+
+![](figures/fishery/Fiske med passiva redskap i Skagerrak och Kattegatt/_discards.png)
+
+### Fisheries with nephrops creels
+
+![](figures/fishery/Fiske med kräftburar/_map.png)
+
+![](figures/fishery/Fiske med kräftburar/_season.png)
+
+![](figures/fishery/Fiske med kräftburar/_species.png)
+
+![](figures/fishery/Fiske med kräftburar/_gear.png)
+
+![](figures/fishery/Fiske med kräftburar/_size.png)
+
+![](figures/fishery/Fiske med kräftburar/_discards.png)
+
+### Salmon fisheries
+
+![](figures/fishery/Fiske efter lax/_map.png)
+
+![](figures/fishery/Fiske efter lax/_season.png)
+
+![](figures/fishery/Fiske efter lax/_species.png)
+
+![](figures/fishery/Fiske efter lax/_gear.png)
+
+![](figures/fishery/Fiske efter lax/_size.png)
+
+![](figures/fishery/Fiske efter lax/_discards.png)

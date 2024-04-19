@@ -1,0 +1,287 @@
+---
+title: "Create figures for ecosystem project"
+author: "Max Lindmark"
+date: today
+date-format: iso
+toc: true
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 100%
+editor: source
+execute:
+  warning: false
+---
+
+# Load libraries
+
+```{r load libs}
+#| message: false
+
+library(tidyverse)
+library(tidylog)
+library(patchwork)
+library(viridis)
+library(RColorBrewer)
+library(ggforce)
+library(readxl)
+library(raster)
+library(ggalluvial)
+# devtools::install_github("seananderson/ggsidekick") # not on CRAN 
+library(ggsidekick); theme_set(theme_sleek(base_size = 10))
+
+# Set make working directory relative to your path -- no hardcoded paths
+home <- here::here()
+
+# Load functions for plotting and manipulating data
+source(paste0(home, "/R/lat-lon.R"))
+
+# Change the limit for scientific notation
+options(scipen = 10000)
+```
+
+# Load data
+
+```{r}
+#| message: false
+# Sofia has now updated it so that it's a single file with the "correct" focat code
+load(paste0(home, "/data/test_lovgren_foCatFA.RData"))
+lb <- lovgren_foCatFA %>% rename(foCatFA = foCatFA_update)
+
+# Add fisheries common names
+fishery_names <- read_delim(paste0(home, "/data/names_fisheries.csv"), delim = ";") %>%
+  dplyr::select(-HAVSKOD, -Redskap, -foCatFA_tmp, -foCatEu4)
+
+# See how they match
+#setdiff(fishery_names$foCatFA, lb$foCatFA)
+
+lb <- lb %>% left_join(fishery_names, by = "foCatFA")
+
+# Add year & month
+lb <- lb %>% 
+  mutate(year = year(as.Date(as.character(AVRESDAT), format = "%Y%m%d")),
+         month = month(as.Date(as.character(AVRESDAT), format = "%Y%m%d")),
+         month_name = as.factor(month),
+         month_name = fct_recode(month_name,
+                                 "Januari" = "1",
+                                 "Februari" = "2",
+                                 "Mars" = "3",
+                                 "April" = "4",
+                                 "Maj" = "5",
+                                 "Juni" = "6",
+                                 "Juli" = "7",
+                                 "Augusti" = "8",
+                                 "September" = "9",
+                                 "Oktober" = "10",
+                                 "November" = "11",
+                                 "December" = "12"))
+
+# Add species common and latin names
+spcode <- read_delim(paste0(home, "/data/names_species.csv"), delim = ";") %>% 
+  dplyr::select(FNAMNSVE, MAFKOD)
+
+# Clean some errors and categories we don't use
+lb <- lb %>%
+  left_join(spcode, by = "MAFKOD") %>% 
+  filter(KVANT > 0) %>% 
+  filter(!FNAMNSVE %in% c("Redskap Med Sälskada (St Redskap)",
+                          "Obest. benfiskar")) %>%
+  drop_na(FNAMNSVE)
+ 
+# Add gear names
+# TODO: use Sofia's data? But 2021 does not contain all gears
+gear_names <- read_delim(paste0(home, "/data/scrap_names_gear.csv"), delim = ";") %>%
+  dplyr::select(-Note)
+
+# gear_names <- read_delim(paste0(home, "/data/names_gear.csv"), delim = ";") %>%
+#   dplyr::select(-Note) %>% 
+#   mutate(Redskap2 = NA) %>% 
+#   mutate(Redskap2 = ifelse(grepl("Parbottentrål", REDSKAP), "Parbottentrål", Redskap2),
+#          Redskap2 = ifelse(grepl("Bottentrål", REDSKAP), "Bottentrål", Redskap2),
+#          Redskap2 = ifelse(grepl("Btrål", REDSKAP), "Bottentrål", Redskap2),
+#          Redskap2 = ifelse(grepl("Flyttrål", REDSKAP), "Flyttrål", Redskap2),
+#          Redskap2 = ifelse(grepl("Parflyttrål", REDSKAP), "Parflyttrål", Redskap2)) %>% 
+#   as.data.frame()
+
+# gear_names
+# 
+# unique(gear_names$Redskap2)
+
+lb <- lb %>% left_join(gear_names, by = "REDSKKOD")
+
+# Load discards
+discard <- read_excel(paste0(home, "/data/Discard 2008-2022.xlsx")) %>%
+  dplyr::select(Year, foCatNat, Art, `Utkast (kg)`) %>% 
+  rename(year = Year,
+         discards = `Utkast (kg)`)
+
+# Join the total loggbook landings by the same aggregation (year, fishery)
+lb_fishery <- lb %>% 
+  rename(Art = FNAMNSVE) %>% 
+  summarise(KVANT = sum(KVANT), .by = c(foCatNat, year, Art))
+  
+discard <- discard %>%
+  left_join(lb_fishery, by = c("foCatNat", "year", "Art")) %>%
+  filter(discards > 0)
+
+# Lastly, join in fishery based on focatnat
+discard <- discard %>% 
+  left_join(lb %>%
+              distinct(foCatNat, .keep_all = TRUE) %>%
+              dplyr::select("fishery", "foCatNat", "HAVSKOD"),
+            by = "foCatNat") %>% 
+  drop_na(fishery)
+
+# Annotation df for discard
+md <- expand_grid(year = c(2020, 2021, 2015), 
+                  y = 0,
+                  fishery = unique(discard$fishery),
+                  label = "No discard data collection") %>% 
+  mutate(keep = ifelse(year == 2015 & !fishery == "Bottentrålfiske efter torsk i Östersjön", "N", "Y")) %>% 
+  filter(keep == "Y") %>% 
+  dplyr::select(-keep)
+
+# Add coordinates
+lb <- lb %>%
+  mutate(lat = format_position(LATITUD),
+         lon = format_position(LONGITUD))
+
+# Add ICES subdivision
+shape <- shapefile(paste0(home, "/data/ICES_StatRec_mapto_ICES_Areas/StatRec_map_Areas_Full_20170124.shp"))
+
+pts <- SpatialPoints(cbind(lb$lon, lb$lat), 
+                     proj4string = CRS(proj4string(shape)))
+
+lb$subdiv <- over(pts, shape)$Area_27
+```
+
+Baltic Sea
+
+```{r}
+# Östersjön: Rödspätta Kattegatt, Bälthavet och Öresund ICES ple.27.21-23
+# Östersjön: Rödspätta Östersjön: 24-32 ICES ple.27.24-32
+# Östersjön: Sill/Strömming Bottniska viken: 30-31 ICES her.27.3031
+# Östersjön: Sill/Strömming Centrala Östersjön, utom Rigabukten: 25-29, 32 ICES her.27.25-2932
+# Östersjön: Skarpsill/Brisling/Vassbuk Östersjön 22-32 ICES spr.27.22-32
+# Östersjön: Torsk Östra beståndet: 25-32 ICES cod.27.24-32
+# Östersjön: Torsk Västra beståndet Östersjön, 22-24 ICES cod.27.22-24
+
+discard_spec <- discard %>% 
+  filter(Art %in% c("Torsk", "Sill/Strömming", "Rödspotta")) %>% 
+  summarise(Utkast = sum(discards, na.rm = TRUE),
+            Landningar = sum(KVANT, na.rm = TRUE),
+            .by = c(Art, HAVSKOD, fishery, year)) %>% 
+  pivot_longer(c("Utkast", "Landningar")) %>% 
+  mutate(HAVSKOD = ifelse(HAVSKOD == "ÖS", "Östersjön", HAVSKOD)) %>% 
+  filter(HAVSKOD == "Östersjön") %>% 
+  mutate(Art = ifelse(Art == "Sill/Strömming", "Sill, Strömming", Art))
+
+
+for(i in unique(discard_spec$Art)) {
+  
+  discard_spec %>% 
+    summarise(value = sum(value),
+              .by = c(Art, HAVSKOD, name, year)) %>% 
+    filter(Art == i) %>% 
+    ggplot(aes(year, value / 1000, fill = factor(name, levels = c("Utkast", "Landningar")))) +
+    facet_wrap(~HAVSKOD, scales = "free_y", ncol = 1) +
+    geom_bar(stat = "identity") + 
+    scale_fill_manual(values = c("gray30", "gray80"), name = "") +
+    theme(legend.position = "bottom") + 
+    labs(y = "Fångst (ton)", x = "År") + 
+    ggtitle(i)
+  
+  ggsave(paste0("figures/ecosystem/baltic/landing_discard_", i, ".png"), width = 17, height = 17, units = "cm")
+
+  discard_spec %>% 
+    filter(Art == i) %>% 
+    ggplot(aes(year, value / 1000, fill = fishery)) +
+    facet_grid(name~HAVSKOD, scales = "free_y") +
+    geom_bar(stat = "identity") + 
+    scale_fill_brewer(palette = "Set2", name = "") +
+    theme(legend.position = "bottom") + 
+    labs(y = "Fångst (ton)", x = "År") + 
+    ggtitle(i)
+  
+    ggsave(paste0("figures/ecosystem/baltic/landing_discard_fishery_", i, ".png"), width = 17, height = 17, units = "cm")
+
+}
+```
+
+West coast
+
+```{r}
+# West coast
+# Blåvitling/Kolmule	Nordostatlanten
+# Gråsej	Nordsjön, Rockall och Väster om Skottland, Skagerrak och Kattegatt 
+# Havskräfta	Skagerrak och Kattegatt
+# Kolja	Nordsjön, väster om Skottland och Skagerrak
+# Kummel	Biscaya till Kattegatt
+# Makrill	Nordöstra atlanten 
+# Nordhavsräka	Nordsjön, Skagerrak och Kattegatt
+# Rödspätta	Nordsjön och Skagerrak
+# Sill/Strömming	Höstlek: Nordsjön, Skagerrak och Kattegatt, Östra Engelska kanalen
+# Sill/Strömming	Norsk vårlekande sill i Nordost atlanten och Arktisk
+# Sill/Strömming	Vårlek: Skagerrak, Kattegatt och v. Östersjön
+# Skarpsill/Brisling/Vassbuk	Nordsjön, Skagerrak och Kattegatt
+# Torsk	Nordsjön, Engelska kanalen och Skagerrak - viking substock
+# Torsk	Nordsjön, Engelska kanalen och Skagerrak - northwestern substock
+# Torsk	Nordsjön, Engelska kanalen och Skagerrak - southern substock
+# Torsk	Kattegatt
+# Vitling	Skagerrak och Kattegatt
+# Vitling	Nordsjön och östra Engelska kanalen
+# Äkta tunga	Skagerrak, Kattegatt och v. Östersjön
+
+discard_spec <- discard %>% 
+  filter(Art %in% c("Blåvitling", "Gråsej", "Havskräfta", "Kolja", "Kummel", "Makrill",
+                    "Nordhavsräka", "Rödspotta", "Sill/Strömming", "Skarpsill",
+                    "Torsk", "Vitling", "Äkta tunga", "Rödspotta")) %>% 
+  summarise(Utkast = sum(discards, na.rm = TRUE),
+            Landningar = sum(KVANT, na.rm = TRUE),
+            .by = c(Art, HAVSKOD, fishery, year)) %>% 
+  pivot_longer(c("Utkast", "Landningar")) %>% 
+  mutate(HAVSKOD = ifelse(HAVSKOD == "K", "Kattegatt", HAVSKOD),
+         HAVSKOD = ifelse(HAVSKOD == "S", "Skagerakk", HAVSKOD)) %>% 
+  filter(!HAVSKOD == "ÖS") %>% 
+  mutate(Art = ifelse(Art == "Sill/Strömming", "Sill, Strömming", Art))
+
+
+for(i in unique(discard_spec$Art)) {
+  
+  discard_spec %>% 
+    summarise(value = sum(value),
+              .by = c(Art, HAVSKOD, name, year)) %>% 
+    filter(Art == i) %>% 
+    ggplot(aes(year, value / 1000, fill = factor(name, levels = c("Utkast", "Landningar")))) +
+    facet_wrap(~HAVSKOD, scales = "free_y", ncol = 1) +
+    geom_bar(stat = "identity") + 
+    scale_fill_manual(values = c("gray30", "gray80"), name = "") +
+    theme(legend.position = "bottom") + 
+    labs(y = "Fångst (ton)", x = "År") + 
+    ggtitle(i)
+  
+  ggsave(paste0("figures/ecosystem/west_coast/landing_discard_", i, ".png"), width = 17, height = 17, units = "cm")
+
+  discard_spec %>% 
+    filter(Art == i) %>% 
+    ggplot(aes(year, value / 1000, fill = fishery)) +
+    facet_grid(name~HAVSKOD, scales = "free_y") +
+    geom_bar(stat = "identity") + 
+    scale_fill_brewer(palette = "Set2", name = "") +
+    theme(legend.position = "bottom") + 
+    labs(y = "Fångst (ton)", x = "År") + 
+    ggtitle(i)
+  
+    ggsave(paste0("figures/ecosystem/west_coast/landing_discard_fishery_", i, ".png"), width = 17, height = 17, units = "cm")
+
+}
+
+```
+
+

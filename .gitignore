@@ -47,3 +47,17 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# Old data and code
+data/
+_andreas/
+_jonas/
+
+# Sensitive data
+data/Lövgren/
+
+*/scrap_Lovgren_2003_with_all_metiers.xlsx
+
+.DS_Store
+
+2015_atlas.pdf
