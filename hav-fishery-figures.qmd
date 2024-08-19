@@ -1,0 +1,332 @@
+---
+title: "Mikaelas fishery stuff"
+author: "Max Lindmark"
+date: today
+date-format: iso
+toc: true
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 100%
+editor: source
+execute:
+  warning: false
+---
+
+# Load libraries
+
+```{r load libs}
+#| message: false
+
+library(tidyverse)
+library(tidylog)
+library(kableExtra)
+library(writexl)
+library(readxl)
+library(raster)
+
+# Set make working directory relative to your path -- no hardcoded paths
+home <- here::here()
+
+# Load functions for plotting and manipulating data
+source(paste0(home, "/R/lat-lon.R"))
+
+# Change the limit for scientific notation
+options(scipen = 10000)
+```
+
+# Load data
+
+```{r}
+#| message: false
+#| code-fold: true
+#| results: hide
+# Sofia has now updated it so that it's a single file with the "correct" focat code
+# load(paste0(home, "/data/lovgren_foCatFA_2003_2023_20240611.RData"))
+# lb <- lovgren_foCatFA |> rename(foCatFA = foCatFA_update) |> filter(year == 2023)
+
+load(paste0(home, "/_mikaela/preCL_cleaned_20240312.RData"))
+#preCL <- preCL |> filter(year == 2023)
+
+# Add fisheries common names
+# fishery_names <- read_delim(paste0(home, "/data/names_fisheries.csv"), delim = ";") |>
+#   dplyr::select(-HAVSKOD, -Redskap, -foCatFA_tmp, -foCatEu4)
+
+# See how they match
+# setdiff(fishery_names$foCatFA, preCL$foCatFA)
+
+# lb <- lb |> left_join(fishery_names, by = "foCatFA")
+
+# Read in HaV fishery categories based on gear code
+cat_temp <- read_excel(paste0(home, "/_mikaela/Havs fiskerier.xlsx")) |> 
+  dplyr::select(-Kommentar) |> 
+  janitor::clean_names() |> 
+  mutate(fishery = paste(namn_beteckning_i_riskanalys, redskapstyp, omrade, sep = "_"))
+
+# How many rows per fishery?
+# Strange. Take distinct rows only
+cat_temp |> 
+  summarise(n = n(), .by = fishery)
+
+#FIXME: unclear why there are 3 repeated rows for this fishey in the excel file
+cat_temp |> 
+  filter(fishery == "Dermersalt fiske_Passivt_Östersjön") |> 
+  as.data.frame()
+
+# Take only unique rows
+cat_temp <- cat_temp |> distinct(fishery, .keep_all = TRUE)
+
+# Drop fisheries without redskapskod
+cat_temp <- cat_temp |> drop_na(redskapskod)
+
+# Loop through all categories and make longer
+cat <- list()
+
+for(i in unique(cat_temp$fishery)) {
+  
+  tmp <- cat_temp |>
+    filter(fishery == i)
+  
+  nmax <- max(stringr::str_count(tmp$redskapskod, ",")) + 1
+  
+  tmp <- tmp |> 
+    separate(redskapskod, paste0("col", seq_len(nmax)), sep = ",", fill = "right", convert = TRUE) |> 
+    pivot_longer(c(-namn_beteckning_i_riskanalys, -redskapstyp, -omrade, -fishery),
+                 values_to = "redskapskod") |> 
+    dplyr::select(-name)
+  
+  cat[[i]] <- tmp
+  
+}
+
+cat <- bind_rows(cat)
+
+# Join these fisheries to preCL by redskapskod
+preCL <- preCL |> 
+  left_join(cat |> 
+              rename(REDSKKOD = redskapskod),
+            by = "REDSKKOD")
+
+# Some rows are not in preCL, here are the focatnat and gear codes (they're not in the excel file)
+preCL |> filter(is.na(fishery)) |> distinct(foCatNat, REDSKKOD)
+```
+
+# What focatnat categories are in each gear?
+
+```{r}
+#| code-fold: false
+preCL_sub <- preCL |>
+  distinct(REDSKKOD, foCatNat, fishery) |> 
+  relocate(fishery) |> 
+  arrange(fishery)
+
+knitr::kable(preCL_sub,
+             format = "html",
+             full_width = FALSE, 
+             caption = "Focatnat categories for each redskapskod (fishery)")
+```
+
+# Add stock information
+
+```{r}
+# Add in species name
+spcode <- read_delim(paste0(home, "/data/names_species.csv"), delim = ";") |> 
+  dplyr::select(FNAMNSVE, MAFKOD)
+
+preCL <- preCL |>
+  left_join(spcode, by = "MAFKOD")
+
+# Add ICES subdivision
+shape <- shapefile(paste0(home, "/data/ICES_StatRec_mapto_ICES_Areas/StatRec_map_Areas_Full_20170124.shp"))
+
+pts <- SpatialPoints(cbind(preCL$DECLONG, preCL$DECLAT), 
+                     proj4string = CRS(proj4string(shape)))
+
+preCL$subdiv <- over(pts, shape)$Area_27
+
+# Add FAO area as well to match stock name
+preCL$SUB_REGION <- paste0("27.", preCL$subdiv)
+
+# Which stocks do we need to define?
+sp_list <- read_excel(paste0(home, "/_mikaela/Riskanalys 2024 biologisk rådgivning och riskanalys av fiskerier.xlsx"), sheet = 2) |> 
+  mutate(stock = paste(Art, Bestånd)) |> 
+  distinct(stock)
+
+# NA means species above in the list... 
+#sp_list |> as.data.frame()
+
+# Add stock column
+# https://stockdatabase.ices.dk/default.aspx
+
+preCL <- preCL |> 
+  mutate(
+    Bestånd = NA,
+    Bestånd = ifelse(FNAMNSVE == "Bergtunga" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "lem.27.3a47d", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Bleka" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "pol.27.3a4", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Fjärsing" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "greatrweaver.27.3a4", Bestånd), #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
+    Bestånd = ifelse(FNAMNSVE == "Gråsej" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"), 
+                     "pok.27.3a46", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Havskatt" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"), 
+                     "caa.27.3a46", Bestånd), #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
+    Bestånd = ifelse(FNAMNSVE == "Havskräfta" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"), #FIXME ICES stock name indicates area 4 but I think it's only 3a
+                     "nep.fu.3-4", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Hummer" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"), #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
+                     "lobster.27.3a", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Hälleflundra", #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
+                     "halibut.27", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Knot" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"), 
+                     "gug.27.3a47d", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Kolja" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a"), 
+                     "had.27.46a20", Bestånd), #FIXME: The stock is 4... so which stock is 3a?
+    Bestånd = ifelse(FNAMNSVE == "Krabbtaska" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"), 
+                     "bcrab.27.3a", Bestånd), #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
+    Bestånd = ifelse(FNAMNSVE == "Kummel" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"),
+                     "hke.27.3a46-8abd", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Långa" & SUB_REGION %in% c("27.4.a", "27.6.a", "27.3.a.20", "27.3.a.21"),
+                     "lin.27.346-91214", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Makrill",
+                     "mac.27.nea", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Marulk" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"),
+                     "anf.27.3a46", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Pigghaj", #FIXME: Hav-list says 3a but stock is 27 and catches are in other areas than 3a!
+                     "dgs.27.nea", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Piggvar" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"),
+                     "tur.27.3a", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Piggvar" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c"),
+                     "tur.27.4", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Piggvar" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+                     "tur.27.22-32", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Slätrocka",
+                     "rockor", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Slätrocka",
+                     "rockor", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Nordhavsräka" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a"), #FIXME: 4a east? same as 27.4.a?
+                     "pra.27.3a4a", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Rödspotta" & SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23"), 
+                     "ple.27.21-23", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Rödspotta" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
+                     "ple.27.24-32", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Rödspotta" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20"), 
+                     "ple.27.420", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Rödtunga" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "wit.27.3a47d", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sandskädda" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "dab.27.3a4", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sandskädda" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+                     "dab.27.22-32", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.2.a", "27.4.a"),
+                     "her.27.1-24a514a", Bestånd), #FIXME: divisions 4.a is both in this stock and in her.27.3a47d below
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24"), 
+                     "her.27.20-24", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.29", "27.3.d.32"), 
+                     "her.27.25-2932", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.d.30", "27.3.d.31"), 
+                     "her.27.3031", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"), 
+                     "her.27.3a47d", Bestånd),
+    #FIXME: Sill	SD 22-24 (3a)	4 ??? Which stock is this?
+    Bestånd = ifelse(FNAMNSVE == "Sjurygg" & SUB_REGION %in% c("27.3.b.23", "27.3.a.20", "27.3.a.21"), 
+                     "lumpsucker.27.23.3a", Bestånd), #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
+    Bestånd = ifelse(FNAMNSVE == "Sjurygg" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), #FIXME: Hav-list says 23 + 3a but there's no stock and catches are in other areas aswell
+                     "lumpsucker.27", Bestånd),  #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
+    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "fle.27.3a4", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23"),
+                     "fle.27.2223", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25"), #FIXME: 24-25 NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
+                     "fle.27.24-25", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.27", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
+                     "bwp.27.2729-32 	", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.26", "27.3.d.28.1", "27.3.d.28.2"), #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
+                     "bwp.27.2628", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Slätvar" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "bll.27.3a47de", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Slätvar" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+                     "bll.27.22-32", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Taggmakrill" & SUB_REGION %in% c("27.4.a", "27.6.a"),
+                     "hom.27.2a4a5b6a7a-ce-k8", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Taggmakrill" & SUB_REGION %in% c("27.3.a.21", "27.3.a.20", "27.4.b", "27.4.c"),
+                     "hom.27.3a4bc7d", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24"),
+                     "cod.27.22-24", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+                     "cod.27.24-32", Bestånd), #FIXME Stock name is 24-32 but surely this is 25-32?
+    Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.3.a.21"),
+                     "cod.27.21", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20"), #FIXME 6a not in Daniels list
+                     "cod.27.46a7d20", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Äkta tunga" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24"), 
+                     "sol.27.20-24", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Vitling" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"), 
+                     "whg.27.3a", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Vitling" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c"),
+                     "whg.27.47d", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Vitlinglyra" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"), 
+                     "nop.27.3a4", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Öring" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"), #FIXME: 3a not a stock, made up name
+                     "btrout.27.3a", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Öring" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+                     "trs.27.22-32", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Lax" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+                     "sal.27.22-31", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Ål",
+                     "ele.2737.nea", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Blåvitling",
+                     "whb.27.1-91214", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skarpsill" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
+                     "spr.27.22-32", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skarpsill" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"), 
+                     "spr.27.3a4", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Tobis" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"), 
+                     "san.27.3a4", Bestånd), #FIXME: 3a + 4 is not a stock, made up name
+    Bestånd = ifelse(FNAMNSVE == "Siklöja" & SUB_REGION %in% c("27.3.d.30", "27.3.d.31"), #FIXME: Not in stock-db, made up name
+                     "ven.27.3031", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Siklöja" & SUB_REGION %in% c("27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.29", "27.3.d.32"), #FIXME: Not in stock-db, made up name
+                     "ven.27.25-2932", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skoläst" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"),
+                     "rng.27.3a", Bestånd))
+```
+
+# 1. Arter per fiske
+
+```{r}
+#| message: false
+#| results: asis
+
+preCL_sp <- preCL |>
+  drop_na(Bestånd) |> 
+  dplyr::select(FNAMNSVE, Bestånd) |> 
+  distinct(FNAMNSVE, Bestånd) |> 
+  arrange(FNAMNSVE)
+
+preCL_sum <- preCL |> 
+  drop_na(Bestånd) |> 
+  drop_na(fishery) |> 
+  filter(KG >= 0) |> # FIXME: negative weights??
+  rename(Fiskeri = fishery) |> 
+  summarise(kg = sum(KG), .by = c(Fiskeri, Bestånd)) |> 
+  tidylog::left_join(preCL_sp, by = "Bestånd") |> 
+  arrange(Fiskeri, FNAMNSVE) |> 
+  filter(kg > 0)
+
+
+knitr::kable(preCL_sum,
+             format = "html",
+             full_width = FALSE, 
+             caption = "Landningar i kg per fiske och bestånd") |> 
+  kable_styling()
+
+write_xlsx(preCL_sum, paste0(home, "/output/2023/HaV/table1.xlsx"))
+```
+
+
+
