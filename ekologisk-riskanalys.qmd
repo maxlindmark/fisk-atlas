@@ -27,6 +27,7 @@ execute:
 library(tidyverse)
 library(tidylog)
 library(kableExtra)
+library(writexl)
 
 # Set make working directory relative to your path -- no hardcoded paths
 home <- here::here()
@@ -167,7 +168,7 @@ catch <- catch |>
                      "nep.fu.3-4", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Nordhavsräka" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a"), #FIXME: 4a east? same as 27.4.a?
                      "pra.27.3a4a", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Kolja" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20"), 
+    Bestånd = ifelse(FNAMNSVE == "Kolja" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a"), #FIXME: 4a east? same as 27.4.a?
                      "had.27.46a20", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Gråsej" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"), 
                      "pok.27.3a46", Bestånd),
@@ -273,6 +274,7 @@ for(i in unique(catch$Fiske)) {
   
   target_sp <- catch |> 
     filter(Fiske == i) |> 
+    filter(YEAR >= 2019 & YEAR <= 2023) |> 
     drop_na(TOTWGHTLANDG) |> 
     drop_na(Art) |> 
     summarise(Värde = sum(TOTVALLANDG), .by = Art) |> 
@@ -292,7 +294,7 @@ for(i in unique(catch$Fiske)) {
   } else{
     
     target_sp <- target_sp |> 
-    filter(`Kumulativ Procent` <= 95) |> 
+    filter(`Kumulativ Procent` <= 95 | lag(`Kumulativ Procent` <= 95, default = FALSE)) |> 
     dplyr::select(Art, Procent, `Kumulativ Procent`) |> 
     mutate(Procent = round(Procent, digits = 1),
            `Kumulativ Procent` = round(`Kumulativ Procent`, digits = 1))
@@ -309,7 +311,7 @@ for(i in unique(catch$Fiske)) {
 
 target_sp_df <- bind_rows(target_sp_list)
 
-write_csv(target_sp_df, paste0(home, "/_daniel/output/table1.csv"))
+write_xlsx(target_sp_df, paste0(home, "/_daniel/output/table1.xlsx"))
 ```
 
 # 2. Största fisken per bestånd
@@ -319,8 +321,6 @@ De fisken som tillsammans/kumulativt utgör minst 95% av ett de totala fångster
 #| code-fold: false
 #| results: asis
 
-# FIXME: Assume all years?
-
 catch_sub <- catch |> drop_na(Bestånd)
 
 stock_target_sub_list <- list()
@@ -329,6 +329,7 @@ for(i in unique(catch_sub$Bestånd)) {
   
   stock_target_sub <- catch_sub |> 
     filter(Bestånd == i) |> 
+    filter(YEAR >= 2019 & YEAR <= 2023) |> 
     drop_na(DISCARDS) |> 
     mutate(Fångst = DISCARDS + TOTWGHTLANDG) |> 
     summarise(Fångst = sum(Fångst), .by = Fiske) |> 
@@ -348,7 +349,7 @@ for(i in unique(catch_sub$Bestånd)) {
     } else{
       
       stock_target_sub <- stock_target_sub |> 
-        filter(`Kumulativ Procent` <= 95) |> 
+        filter(`Kumulativ Procent` <= 95 | lag(`Kumulativ Procent` <= 95, default = FALSE)) |> 
         dplyr::select(Fiske, Procent, `Kumulativ Procent`) |> 
         mutate(Procent = round(Procent, digits = 1),
                `Kumulativ Procent` = round(`Kumulativ Procent`, digits = 1))
@@ -366,7 +367,7 @@ for(i in unique(catch_sub$Bestånd)) {
 
 stock_target_sub_df <- bind_rows(stock_target_sub_list)
 
-write_csv(stock_target_sub_df, paste0(home, "/_daniel/output/table2.csv"))
+write_xlsx(stock_target_sub_df, paste0(home, "/_daniel/output/table2.xlsx"))
 ```
 
 # 3. Antal aktiva fartyg i varje fiske per år de senaste tre åren (2021, 2022 och 2023)
@@ -394,7 +395,7 @@ knitr::kable(fleet,
              caption = "Fartyg per fiske") |> 
   kable_styling()
 
-write_csv(fleet, paste0(home, "/_daniel/output/table3.csv"))
+write_xlsx(fleet, paste0(home, "/_daniel/output/table3.xlsx"))
 ```
 
 # 4. Totalt landningsvärde per fiske per år de senaste tre åren (2021, 2022 och 2023)
@@ -432,6 +433,6 @@ knitr::kable(value_fishery,
              caption = "Landningsvärde per fiske (miljoner SEK)") |> 
   kable_styling()
 
-write_csv(value_fishery, paste0(home, "/_daniel/output/table4.csv"))
+write_xlsx(value_fishery, paste0(home, "/_daniel/output/table4.xlsx"))
 ```
 
