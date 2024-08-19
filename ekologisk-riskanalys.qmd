@@ -41,6 +41,7 @@ home <- here::here()
 load(paste0(home, "/data/Table_A_catch_FDI_with_fisheries_2013-2023.RData"))
 
 # FIXME: Ugly hack to fix the encoding issue! It seems to read in fishery names properly but i can't e.g., filter on the characters... 
+# A solution might be to save as xlsx, since it seems to be related to cvs and excel on mac!
 write.csv(table_A_catch, paste0(home, "/catch.csv"), fileEncoding = "ISO-8859-1")
 
 catch <- read.csv(paste0(home, "/catch.csv")) |>
@@ -154,9 +155,9 @@ catch <- catch |>
                      "her.27.3031", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"), 
                      "her.27.3a47d", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Skarpsill" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
+    Bestånd = ifelse(FNAMNSVE == "Skarpsill" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
                      "spr.27.22-32", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Skarpsill" & SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23", "27.4.a", "27.4.b", "27.4.c"), 
+    Bestånd = ifelse(FNAMNSVE == "Skarpsill" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"), 
                      "spr.27.3a4", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Rödspotta" & SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23"), 
                      "ple.27.21-23", Bestånd),
@@ -311,7 +312,7 @@ for(i in unique(catch$Fiske)) {
 
 target_sp_df <- bind_rows(target_sp_list)
 
-write_xlsx(target_sp_df, paste0(home, "/_daniel/output/table1.xlsx"))
+write_xlsx(target_sp_df, paste0(home, "/output/2023/ERA/table1.xlsx"))
 ```
 
 # 2. Största fisken per bestånd
@@ -367,7 +368,7 @@ for(i in unique(catch_sub$Bestånd)) {
 
 stock_target_sub_df <- bind_rows(stock_target_sub_list)
 
-write_xlsx(stock_target_sub_df, paste0(home, "/_daniel/output/table2.xlsx"))
+write_xlsx(stock_target_sub_df, paste0(home, "/output/2023/ERA/table2.xlsx"))
 ```
 
 # 3. Antal aktiva fartyg i varje fiske per år de senaste tre åren (2021, 2022 och 2023)
@@ -395,7 +396,7 @@ knitr::kable(fleet,
              caption = "Fartyg per fiske") |> 
   kable_styling()
 
-write_xlsx(fleet, paste0(home, "/_daniel/output/table3.xlsx"))
+write_xlsx(fleet, paste0(home, "/output/2023/ERA/table3.xlsx"))
 ```
 
 # 4. Totalt landningsvärde per fiske per år de senaste tre åren (2021, 2022 och 2023)
@@ -433,6 +434,6 @@ knitr::kable(value_fishery,
              caption = "Landningsvärde per fiske (miljoner SEK)") |> 
   kable_styling()
 
-write_xlsx(value_fishery, paste0(home, "/_daniel/output/table4.xlsx"))
+write_xlsx(value_fishery, paste0(home, "/output/2023/ERA/table4.xlsx"))
 ```
 
