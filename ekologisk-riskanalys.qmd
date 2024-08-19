@@ -1,0 +1,437 @@
+---
+title: "Tabeller för ekologisk riskanalys"
+author: "Max Lindmark"
+date: today
+date-format: iso
+toc: true
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 100%
+editor: source
+execute:
+  warning: false
+---
+
+# Load libraries
+
+```{r load libs}
+#| message: false
+
+library(tidyverse)
+library(tidylog)
+library(kableExtra)
+
+# Set make working directory relative to your path -- no hardcoded paths
+home <- here::here()
+```
+
+# Load FDI data
+
+```{r}
+#| code-fold: false
+
+load(paste0(home, "/data/Table_A_catch_FDI_with_fisheries_2013-2023.RData"))
+
+# FIXME: Ugly hack to fix the encoding issue! It seems to read in fishery names properly but i can't e.g., filter on the characters... 
+write.csv(table_A_catch, paste0(home, "/catch.csv"), fileEncoding = "ISO-8859-1")
+
+catch <- read.csv(paste0(home, "/catch.csv")) |>
+  mutate(Fiske = as.factor(Fiske)) |> 
+  # Make discards numeric (NK will be NA)
+  mutate(DISCARDS = as.numeric(DISCARDS))
+  
+# catch |> distinct(Fiske) |> arrange(Fiske)
+# catch |> filter(Fiske == "Bottentr\xe5lfiske\xa0efter\xa0fisk")
+
+catch <- catch |> 
+  mutate(Fiske = fct_recode(
+    Fiske, 
+    "Räkfiske med rist i Skagerrak, Kattegatt och Nordsjön" =
+      "R\xe4kfiske\xa0med\xa0rist\xa0i\xa0Skagerrak,\xa0Kattegatt\xa0och\xa0Nordsj\xf6n\xa0",
+    "Räkfiske med rist/tunnel i Skagerrak, Kattegatt och Nordsjön" =
+      "R\xe4kfiske\xa0med\xa0rist/tunnel\xa0i\xa0Skagerrak,\xa0Kattegatt\xa0och\xa0Nordsj\xf6n\xa0",
+    "Fiske med kräftburar" =
+      "Fiske\xa0med\xa0kr\xe4ftburar",
+    "Fiske med passiva redskap på västkusten" =
+      "Fiske\xa0med\xa0passiva\xa0redskap\xa0p\xe5\xa0v\xe4stkusten\xa0",
+    "Bottentrålfiske efter kräfta och fisk" =
+      "Bottentr\xe5lfiske\xa0efter\xa0kr\xe4fta\xa0och\xa0fisk",
+    "Bottentrålfiske efter fisk" =
+      "Bottentr\xe5lfiske\xa0efter\xa0fisk",
+    "Bottentrålfiske efter kräfta med rist" =
+      "Bottentr\xe5lfiske\xa0efter\xa0kr\xe4fta\xa0med\xa0rist",
+    "Fiske i Öresund" =
+      "Fiske\xa0i\xa0\xd6resund\xa0",
+    "Bottentrålfiske efter torsk i Östersjön" =
+      "Bottentr\xe5lfiske\xa0efter\xa0torsk\xa0i\xa0\xd6stersj\xf6n\xa0",
+    "Fiske med passiva redskap i centrala och södra Östersjön" =
+      "Fiske\xa0med\xa0passiva\xa0redskap\xa0i\xa0centrala\xa0och\xa0s\xf6dra\xa0\xd6stersj\xf6n\xa0",
+    "Fiske med passiva redskap i norra Östersjön" =
+      "Fiske\xa0med\xa0passiva\xa0redskap\xa0i\xa0norra\xa0\xd6stersj\xf6n\xa0",
+    "Fiske efter siklöja med bottentrål" =
+      "Fiske\xa0efter\xa0sikl\xf6ja\xa0med\xa0bottentr\xe5l\xa0",
+    "Pelagiskt fiske" =
+      "Pelagiskt\xa0fiske",
+    "Fiske efter lax" =
+      "Fiske\xa0efter\xa0lax\xa0")) |> 
+  filter(!Fiske == "Unknown") |> 
+  droplevels() |> 
+  mutate(Fiske = as.character(Fiske))
+
+# Now split some fisheries based on sub region
+
+catch <- catch |> 
+  mutate(Fiske = ifelse(Fiske == "Bottentrålfiske efter fisk" &
+                          SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c"),
+                        "Bottentrålfiske efter fisk i Nordsjön",
+                        Fiske),
+         Fiske = ifelse(Fiske == "Bottentrålfiske efter fisk" &
+                          SUB_REGION %in% c("27.3.a.20"),
+                        "Bottentrålfiske efter fisk i Skagerrak",
+                        Fiske),
+         Fiske = ifelse(Fiske == "Bottentrålfiske efter fisk" &
+                          SUB_REGION %in% c("27.3.a.21"),
+                        "Bottentrålfiske efter kräfta och fisk i Kattegatt",
+                        Fiske),
+         Fiske = ifelse(Fiske == "Bottentrålfiske efter kräfta med rist",
+                        "Bottentrålfiske efter kräfta med rist i Skagerrak och Kattegatt",
+                        Fiske),
+         Fiske = ifelse(Fiske == "Bottentrålfiske efter kräfta och fisk"  &
+                          SUB_REGION %in% c("27.3.a.20"),
+                        "Bottentrålfiske efter kräfta och fisk i Skagerrak",
+                        Fiske),
+         Fiske = ifelse(Fiske == "Bottentrålfiske efter kräfta och fisk"  &
+                          SUB_REGION %in% c("27.3.a.21"),
+                        "Bottentrålfiske efter kräfta och fisk i Kattegatt",
+                        Fiske)
+         ) |> # Harmonize names
+  mutate(Fiske = ifelse(Fiske == "Pelagiskt fiske", "Pelagiskt fiske med aktiva redskap", Fiske),
+         Fiske = ifelse(Fiske == "Fiske med passiva redskap på västkusten", "Fiske med passiva redskap i Skagerrak och Kattegatt", Fiske))
+  
+# Add in species name
+spcode <- read_delim(paste0(home, "/data/names_species.csv"), delim = ";") |> 
+  dplyr::select(FNAMNSVE, MAFKOD) |> 
+  rename(SPECIES = MAFKOD)
+
+catch <- catch |>
+  left_join(spcode, by = "SPECIES")
+
+# FIXME:
+# Which species names are not in the catch data because they are not in the code list?
+# 129, which is 57%
+# However, seems all stocks and in general most interesting species here do have common names matched
+catch |> filter(is.na(FNAMNSVE)) |> distinct(SPECIES)
+129/length(unique(catch$SPECIES))
+  
+# Add stock column
+# https://stockdatabase.ices.dk/default.aspx
+catch <- catch |> 
+  mutate(
+    Bestånd = NA,
+    Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24"),
+                     "cod.27.22-24", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+                     "cod.27.24-32", Bestånd), #FIXME Stock name is 24-32 but surely this is 25-32?
+    Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.3.a.21"),
+                     "cod.27.21", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20"), #FIXME 6a not in Daniels list
+                     "cod.27.46a7d20", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.2.a", "27.4.a"),
+                     "her.27.1-24a514a", Bestånd), #FIXME: divisions 4.a is both in this stock and in her.27.3a47d below
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24"), 
+                     "her.27.20-24", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.29", "27.3.d.32"), 
+                     "her.27.25-2932", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.d.30", "27.3.d.31"), 
+                     "her.27.3031", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"), 
+                     "her.27.3a47d", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skarpsill" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
+                     "spr.27.22-32", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skarpsill" & SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23", "27.4.a", "27.4.b", "27.4.c"), 
+                     "spr.27.3a4", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Rödspotta" & SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23"), 
+                     "ple.27.21-23", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Rödspotta" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
+                     "ple.27.24-32", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Rödspotta" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20"), 
+                     "ple.27.420", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Havskräfta" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"), #FIXME ICES stock name indicates area 4 but I think it's only 3a
+                     "nep.fu.3-4", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Nordhavsräka" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a"), #FIXME: 4a east? same as 27.4.a?
+                     "pra.27.3a4a", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Kolja" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20"), 
+                     "had.27.46a20", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Gråsej" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"), 
+                     "pok.27.3a46", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Vitling" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"), 
+                     "whg.27.3a", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Vitling" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c"), #FIXME name in ERA says 4a, but the stock is entire 4 (+ 7d which we don't have)
+                     "whg.27.47d", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Äkta tunga" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24"), 
+                     "sol.27.20-24", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Kummel" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"),
+                     "hke.27.3a46-8abd", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Pigghaj",
+                     "dgs.27.nea", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Rödtunga" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "wit.27.3a47d", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Bergtunga" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "lem.27.3a47d", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Slätvar" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+                     "bll.27.3a47de", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Makrill",
+                     "mac.27.nea", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Blåvitling",
+                     "whb.27.1-91214", Bestånd)
+    )
+
+# Renames some columns
+catch <- catch |> rename(Art = FNAMNSVE)
+```
+
+# Load loggbook data
+
+```{r}
+#| message: false
+#| code-fold: false
+
+load(paste0(home, "/data/lovgren_foCatFA_2003_2023_20240611.RData"))
+lb <- lovgren_foCatFA |> rename(foCatFA = foCatFA_update)
+
+# Add fisheries common names
+fishery_names <- read_delim(paste0(home, "/data/names_fisheries.csv"), delim = ";") |>
+  dplyr::select(-HAVSKOD, -Redskap, -foCatFA_tmp, -foCatEu4)
+
+# See how they match
+lb <- lb |> left_join(fishery_names, by = "foCatFA")
+
+# Refine fisheries into more categories based on gear
+lb <- lb |>
+  mutate(fishery = ifelse(fishery == "Räkfiske i Skagerrak, Kattegatt och Nordsjön" & 
+                            foCatNat == "OTB_CRU_32-69_0_0",
+                          "Räkfiske med rist/tunnel i Skagerrak, Kattegatt och Nordsjön",
+                          fishery),
+         fishery = ifelse(fishery == "Räkfiske i Skagerrak, Kattegatt och Nordsjön" & 
+                            foCatNat == "OTB_CRU_32-69_2_22",
+                          "Räkfiske med rist i Skagerrak, Kattegatt och Nordsjön",
+                          fishery),
+         fishery = ifelse(fishery == "Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt" &
+                            foCatNat %in% c("OTB_CRU_70-89_2_35", "OTB_CRU_70-89_2_35_0_0"),
+                          "Bottentrålfiske efter kräfta med rist i Skagerrak och Kattegatt",
+                          fishery),
+         fishery = ifelse(fishery == "Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt" & MASKSTRL >= 120 & SUBDIV == 20, 
+                          "Bottentrålfiske efter fisk i Skagerrak", 
+                          fishery),
+         fishery = ifelse(fishery == "Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt" & SUBDIV == 21,
+                          "Bottentrålfiske efter kräfta och fisk i Kattegatt", 
+                          fishery),
+         fishery = ifelse(fishery == "Bottentrålfiske efter kräfta och fisk i Skagerrak och Kattegatt" & SUBDIV == 20, 
+                          "Bottentrålfiske efter kräfta och fisk i Skagerrak", 
+                          fishery),
+         fishery = ifelse(foCatFA == "NSTRAWL" & MASKSTRL >= 120, 
+                          "Bottentrålfiske efter fisk i Nordsjön", 
+                          fishery), 
+         fishery = ifelse(foCatFA == "NSTRAWL" & MASKSTRL < 120, 
+                          "scrap", 
+                          fishery)) |> 
+  filter(!fishery == "Räkfiske i Skagerrak, Kattegatt och Nordsjön") |> # only 12 rows remaining
+  filter(!fishery == "scrap")
+
+# Check we now have the same fisheries across both data sets
+identical(sort(unique(lb$fishery)),
+          sort(unique(catch$Fiske)))
+
+# Add year & month
+lb <- lb |> 
+  mutate(year = year(as.Date(as.character(AVRESDAT), format = "%Y%m%d")))
+
+# Add species common and latin names
+# spcode <- read_delim(paste0(home, "/data/names_species.csv"), delim = ";") |> 
+#   dplyr::select(FNAMNSVE, MAFKOD)
+lb <- lb |>
+  left_join(spcode |> rename(MAFKOD = SPECIES), by = "MAFKOD")
+```
+
+# 1. Målarter per fiske
+De arter som tillsammans/kumulativt utgör minst 95% av fiskets totala fångstvärde
+
+```{r}
+#| message: false
+#| results: asis
+
+target_sp_list <- list()
+
+for(i in unique(catch$Fiske)) {
+  
+  target_sp <- catch |> 
+    filter(Fiske == i) |> 
+    drop_na(TOTWGHTLANDG) |> 
+    drop_na(Art) |> 
+    summarise(Värde = sum(TOTVALLANDG), .by = Art) |> 
+    arrange(desc(Värde)) |> 
+    mutate(sum = sum(Värde), 
+           Procent = 100 * (Värde / sum),
+           `Kumulativ Procent` = cumsum(Procent))
+  
+  if( max(target_sp$Procent) >= 95 ) {
+    
+    target_sp <- target_sp |> 
+    filter(Art == head(Art, 1)) |> 
+    dplyr::select(Art, Procent, `Kumulativ Procent`) |> 
+    mutate(Procent = round(Procent, digits = 1),
+           `Kumulativ Procent` = round(`Kumulativ Procent`, digits = 1))
+    
+  } else{
+    
+    target_sp <- target_sp |> 
+    filter(`Kumulativ Procent` <= 95) |> 
+    dplyr::select(Art, Procent, `Kumulativ Procent`) |> 
+    mutate(Procent = round(Procent, digits = 1),
+           `Kumulativ Procent` = round(`Kumulativ Procent`, digits = 1))
+    }
+  
+  print(knitr::kable(target_sp,
+                     format = "html",
+                     full_width = TRUE, 
+                     caption = i) |> 
+          kable_styling())
+  
+  target_sp_list[[i]] <- target_sp |> mutate(Fiske = i)
+}
+
+target_sp_df <- bind_rows(target_sp_list)
+
+write_csv(target_sp_df, paste0(home, "/_daniel/output/table1.csv"))
+```
+
+# 2. Största fisken per bestånd
+De fisken som tillsammans/kumulativt utgör minst 95% av ett de totala fångsterna (L+D) av ett bestånd
+
+```{r}
+#| code-fold: false
+#| results: asis
+
+# FIXME: Assume all years?
+
+catch_sub <- catch |> drop_na(Bestånd)
+
+stock_target_sub_list <- list()
+
+for(i in unique(catch_sub$Bestånd)) {
+  
+  stock_target_sub <- catch_sub |> 
+    filter(Bestånd == i) |> 
+    drop_na(DISCARDS) |> 
+    mutate(Fångst = DISCARDS + TOTWGHTLANDG) |> 
+    summarise(Fångst = sum(Fångst), .by = Fiske) |> 
+    arrange(desc(Fångst)) |> 
+    mutate(sum = sum(Fångst), 
+           Procent = 100 * (Fångst / sum),
+           `Kumulativ Procent` = cumsum(Procent))
+    
+    if( max(stock_target_sub$Procent) >= 95 ) {
+      
+      stock_target_sub <- stock_target_sub |> 
+        filter(Fiske == head(Fiske, 1)) |> 
+        dplyr::select(Fiske, Procent, `Kumulativ Procent`) |> 
+        mutate(Procent = round(Procent, digits = 1),
+               `Kumulativ Procent` = round(`Kumulativ Procent`, digits = 1))
+      
+    } else{
+      
+      stock_target_sub <- stock_target_sub |> 
+        filter(`Kumulativ Procent` <= 95) |> 
+        dplyr::select(Fiske, Procent, `Kumulativ Procent`) |> 
+        mutate(Procent = round(Procent, digits = 1),
+               `Kumulativ Procent` = round(`Kumulativ Procent`, digits = 1))
+      }
+    
+  print(knitr::kable(stock_target_sub,
+                     format = "html",
+                     full_width = TRUE, 
+                     caption = paste("Bestånd = ", i)) |> 
+          kable_styling())
+
+  stock_target_sub_list[[i]] <- stock_target_sub |> mutate(Bestånd = 1)
+  
+}
+
+stock_target_sub_df <- bind_rows(stock_target_sub_list)
+
+write_csv(stock_target_sub_df, paste0(home, "/_daniel/output/table2.csv"))
+```
+
+# 3. Antal aktiva fartyg i varje fiske per år de senaste tre åren (2021, 2022 och 2023)
+
+```{r}
+#| message: false
+#| results: asis
+
+# FIXME: what should the cutoff be? Here I remove vessels that appear less than 10 times since 2021
+
+# Fleet
+fleet <- lb |> 
+  filter(year >= 2021) |> 
+  drop_na(LÄNGD) |> 
+  mutate(n = n(), .by = BATNAMN) |> 
+  filter(n >= 10) |> 
+  summarise(n_vessels = length(unique(BATNAMN)), .by = c(fishery, year)) |> 
+  arrange(year, desc(n_vessels)) |> 
+  pivot_wider(names_from = year, values_from = n_vessels) |> 
+  rename(Fiske = fishery)
+  
+knitr::kable(fleet,
+             format = "html",
+             full_width = FALSE, 
+             caption = "Fartyg per fiske") |> 
+  kable_styling()
+
+write_csv(fleet, paste0(home, "/_daniel/output/table3.csv"))
+```
+
+# 4. Totalt landningsvärde per fiske per år de senaste tre åren (2021, 2022 och 2023)
+
+```{r}
+#| message: false
+#| results: asis
+
+#https://data.ecb.europa.eu/data/datasets/EXR/EXR.D.SEK.EUR.SP00.A?chart_props=W3sibm9kZUlkIjoiMzIyNDQyIiwicHJvcGVydGllcyI6W3siY29sb3JIZXgiOiIiLCJjb2xvclR5cGUiOiIiLCJjaGFydFR5cGUiOiJsaW5lY2hhcnQiLCJsaW5lU3R5bGUiOiJTb2xpZCIsImxpbmVXaWR0aCI6IjEuNSIsImF4aXNQb3NpdGlvbiI6ImxlZnQiLCJvYnNlcnZhdGlvblZhbHVlIjpmYWxzZSwiZGF0ZXMiOlsiMjAyMC0xMi0zMVQyMzowMDowMC4wMDBaIiwiMjAyMy0xMi0zMFQyMzowMDowMC4wMDBaIl0sImlzVGRhdGEiOmZhbHNlLCJtb2RpZmllZFVuaXRUeXBlIjoiIiwieWVhciI6ImRhdGV3aXNlIiwic3RhcnREYXRlIjoiMjAyMS0wMS0wMSIsImVuZERhdGUiOiIyMDIzLTEyLTMxIiwic2V0RGF0ZSI6dHJ1ZSwic2hvd1RhYmxlRGF0YSI6ZmFsc2UsImNoYW5nZU1vZGUiOmZhbHNlLCJzaG93TWVudVN0eWxlQ2hhcnQiOmZhbHNlLCJkaXNwbGF5TW9iaWxlQ2hhcnQiOnRydWUsInNjcmVlblNpemUiOiJtYXgiLCJzY3JlZW5XaWR0aCI6MTcxMiwic2hvd1RkYXRhIjpmYWxzZSwidHJhbnNmb3JtZWRGcmVxdWVuY3kiOiJub25lIiwidHJhbnNmb3JtZWRVbml0Ijoibm9uZSIsImZyZXF1ZW5jeSI6Im5vbmUiLCJ1bml0Ijoibm9uZSIsIm1vZGlmaWVkIjoiZmFsc2UiLCJzZXJpZXNLZXkiOiJkYWlseSIsInNob3d0YWJsZVN0YXRlQmVmb3JlTWF4U2NyZWVuIjpmYWxzZSwiaXNkYXRhY29tcGFyaXNvbiI6ZmFsc2UsInNlcmllc0ZyZXF1ZW5jeSI6ImRhaWx5IiwiaW50aWFsU2VyaWVzRnJlcXVlbmN5IjoiZGFpbHkiLCJtZXRhZGF0YURlY2ltYWwiOiI0IiwiaXNUYWJsZVNvcnRlZCI6ZmFsc2UsImlzWWVhcmx5VGRhdGEiOmZhbHNlLCJyZXNwb25zZURhdGFFbmREYXRlIjoiIiwiaXNpbml0aWFsQ2hhcnREYXRhIjp0cnVlLCJpc0RhdGVzRnJvbURhdGVQaWNrZXIiOnRydWUsImRhdGVQaWNrZXJFbmREYXRlIjoiMjAyMy0xMi0zMSIsImlzRGF0ZVBpY2tlckVuZERhdGUiOnRydWUsInNlcmllc2tleVNldCI6IiIsImRhdGFzZXRJZCI6IjE4IiwiaXNDYWxsYmFjayI6ZmFsc2UsImlzU2xpZGVyVGRhdGEiOnRydWUsImlzU2xpZGVyRGF0YSI6dHJ1ZSwiaXNJbml0aWFsQ2hhcnREYXRhRnJvbUdyYXBoIjp0cnVlLCJjaGFydFNlcmllc0tleSI6IkVYUi5ELlNFSy5FVVIuU1AwMC5BIiwidHlwZU9mIjoiZG93bkxvYWQifV19XQ%3D%3D
+
+
+exchange <- read_csv(paste0(home, "/data/ECB Data Portal_20240618150246.csv")) |> 
+  janitor::clean_names() |> 
+  rename(exchange = swedish_krona_euro_exr_d_sek_eur_sp00_a) |> 
+  mutate(YEAR = year(date),
+         QUARTER = quarter(date)) |> 
+  filter(YEAR %in% c(2021, 2022, 2023)) |> 
+  drop_na(exchange) |> 
+  summarise(mean_exchange = mean(exchange), .by = c(YEAR, QUARTER))
+
+value_fishery <- catch |> 
+  filter(YEAR >= 2021) |> 
+  left_join(exchange, by = c("YEAR", "QUARTER")) |>  
+  drop_na(TOTVALLANDG) |> 
+  mutate(VALUE_SEK = TOTVALLANDG * mean_exchange) |>  
+  summarise(VALUE_SEK = sum(VALUE_SEK), .by = c(Fiske, YEAR)) |>
+  mutate(VALUE_SEK_millions = VALUE_SEK / 1000000) |> 
+  dplyr::select(-VALUE_SEK) |> 
+  arrange(YEAR, desc(VALUE_SEK_millions)) |> 
+  pivot_wider(names_from = YEAR, values_from = VALUE_SEK_millions)
+  
+knitr::kable(value_fishery,
+             format = "html",
+             full_width = FALSE, 
+             caption = "Landningsvärde per fiske (miljoner SEK)") |> 
+  kable_styling()
+
+write_csv(value_fishery, paste0(home, "/_daniel/output/table4.csv"))
+```
+
