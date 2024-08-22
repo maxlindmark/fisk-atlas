@@ -47,23 +47,32 @@ options(scipen = 10000)
 #| message: false
 #| code-fold: true
 #| results: hide
-# Sofia has now updated it so that it's a single file with the "correct" focat code
-# load(paste0(home, "/data/lovgren_foCatFA_2003_2023_20240611.RData"))
-# lb <- lovgren_foCatFA |> rename(foCatFA = foCatFA_update) |> filter(year == 2023)
 
 load(paste0(home, "/_mikaela/preCL_cleaned_20240312.RData"))
-#preCL <- preCL |> filter(year == 2023)
 
-# Add fisheries common names
-# fishery_names <- read_delim(paste0(home, "/data/names_fisheries.csv"), delim = ";") |>
-#   dplyr::select(-HAVSKOD, -Redskap, -foCatFA_tmp, -foCatEu4)
+sort(unique(preCL$FISKEDATUM))
 
-# See how they match
-# setdiff(fishery_names$foCatFA, preCL$foCatFA)
+# Add ICES subdivision
+shape <- shapefile(paste0(home, "/data/ICES_StatRec_mapto_ICES_Areas/StatRec_map_Areas_Full_20170124.shp"))
 
-# lb <- lb |> left_join(fishery_names, by = "foCatFA")
+pts <- SpatialPoints(cbind(preCL$DECLONG, preCL$DECLAT), 
+                     proj4string = CRS(proj4string(shape)))
 
-# Read in HaV fishery categories based on gear code
+preCL$subdiv <- over(pts, shape)$Area_27
+
+# Add FAO area as well to match stock name
+preCL$SUB_REGION <- paste0("27.", preCL$subdiv)
+
+# Add in area to match by fishery definitions
+preCL <- preCL |> 
+  mutate(omrade = NA,
+         omrade = ifelse(SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26",
+                                           "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31"), 
+                         "Östersjön", omrade),
+         omrade = ifelse(SUB_REGION %in% c("27.3.a.20", "27.3.a.21"), 
+                         "Västerhavet", omrade))
+
+# Read in HaV fishery categories based on gear code and area
 cat_temp <- read_excel(paste0(home, "/_mikaela/Havs fiskerier.xlsx")) |> 
   dplyr::select(-Kommentar) |> 
   janitor::clean_names() |> 
@@ -111,16 +120,17 @@ cat <- bind_rows(cat)
 preCL <- preCL |> 
   left_join(cat |> 
               rename(REDSKKOD = redskapskod),
-            by = "REDSKKOD")
-
-# Some rows are not in preCL, here are the focatnat and gear codes (they're not in the excel file)
-preCL |> filter(is.na(fishery)) |> distinct(foCatNat, REDSKKOD)
+            by = c("REDSKKOD", "omrade"))
 ```
 
 # What focatnat categories are in each gear?
 
 ```{r}
 #| code-fold: false
+
+preCL |>
+  distinct(fishery, omrade)
+
 preCL_sub <- preCL |>
   distinct(REDSKKOD, foCatNat, fishery) |> 
   relocate(fishery) |> 
@@ -155,17 +165,6 @@ swe_sp <- swe_sp |>
 preCL <- preCL |>
   left_join(swe_sp, by = c("MAFKOD" = "3A_CODE"))
 
-# Add ICES subdivision
-shape <- shapefile(paste0(home, "/data/ICES_StatRec_mapto_ICES_Areas/StatRec_map_Areas_Full_20170124.shp"))
-
-pts <- SpatialPoints(cbind(preCL$DECLONG, preCL$DECLAT), 
-                     proj4string = CRS(proj4string(shape)))
-
-preCL$subdiv <- over(pts, shape)$Area_27
-
-# Add FAO area as well to match stock name
-preCL$SUB_REGION <- paste0("27.", preCL$subdiv)
-
 # Which stocks do we need to define?
 sp_list <- read_excel(paste0(home, "/_mikaela/Riskanalys 2024 biologisk rådgivning och riskanalys av fiskerier.xlsx"), sheet = 2) |> 
   mutate(stock = paste(Art, Bestånd)) |> 
@@ -173,8 +172,6 @@ sp_list <- read_excel(paste0(home, "/_mikaela/Riskanalys 2024 biologisk rådgiv
 
 # Add stock column
 # https://stockdatabase.ices.dk/default.aspx
-
-sort(unique(preCL$SUB_REGION))
 
 preCL <- preCL |> 
   mutate(
