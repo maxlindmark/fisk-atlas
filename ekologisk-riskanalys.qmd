@@ -199,20 +199,17 @@ catch <- catch |>
                             "Fiske med övriga passiva redskap; 22-32",
                             Fiske_ERA),
          )
-
-catch |> filter(Fiske == "Fiske efter siklöja med bottentrål") |> distinct(SUB_REGION, GEAR_TYPE)
-
 ```
 
 ```{r}
-# knitr::kable(catch |> 
-#                drop_na(Fiske_ERA) |> 
-#                distinct(Fiske_ERA, GEAR_TYPE, SUB_REGION, Fiske) |> 
-#                arrange(Fiske_ERA, Fiske, GEAR_TYPE, SUB_REGION),
-#              format = "html",
-#              full_width = FALSE, 
-#              caption = "Redskap och subregion per ERA-fiske") |> 
-#   kable_styling()
+knitr::kable(catch |>
+               drop_na(Fiske_ERA) |>
+               distinct(Fiske_ERA, GEAR_TYPE, SUB_REGION, Fiske) |>
+               arrange(Fiske_ERA, Fiske, GEAR_TYPE, SUB_REGION),
+             format = "html",
+             full_width = FALSE,
+             caption = "Redskap och subregion per ERA-fiske") |>
+  kable_styling()
 ```
 
 <span style="color:red;"> Här ser vi alla kombinationer av GEAR_TYPE, SUB_REGION och Fiske som inte fick någon Fiske_ERA ("Fiske efter lax" har hamnat i "Fiske med övriga passiva redskap; 22-32", "Fiske efter siklöja med bottentrål" har hamnat i "Fiske med finmaskig bottentrål efter pelagiska arter; 30-31", och "Bottentrålfiske efter fisk" i Kattegatt har hamnat i "Bottentrål havskräfta och fisk;  3a21". Ska passiva redskap i 4b in någonstans? Ska några av de pelagiska fiskena ska in i en Fiske_ERA kategori? Var ska 27.2.a hamna? </span>
