@@ -135,12 +135,25 @@ knitr::kable(preCL_sub,
 # Add stock information
 
 ```{r}
+#| code-fold: false
+
 # Add in species name
-spcode <- read_delim(paste0(home, "/data/names_species.csv"), delim = ";") |> 
-  dplyr::select(FNAMNSVE, MAFKOD)
+# spcode <- read_delim(paste0(home, "/data/names_species.csv"), delim = ";") |> 
+#   dplyr::select(FNAMNSVE, MAFKOD)
+# 
+# preCL <- preCL |>
+#   left_join(spcode, by = "MAFKOD")
+
+asfis <- read_csv(paste0(home, "/data/ASFIS_sp_2021.csv")) 
+swe_sp <- read_delim(paste0(home, "/data/latin_swedish_names.csv")) 
+
+swe_sp <- swe_sp |> 
+  left_join(asfis |> 
+              dplyr::select(`3A_CODE`, Scientific_name),
+            by = c(`Latinskt namn` = "Scientific_name"))
 
 preCL <- preCL |>
-  left_join(spcode, by = "MAFKOD")
+  left_join(swe_sp, by = c("MAFKOD" = "3A_CODE"))
 
 # Add ICES subdivision
 shape <- shapefile(paste0(home, "/data/ICES_StatRec_mapto_ICES_Areas/StatRec_map_Areas_Full_20170124.shp"))
@@ -158,11 +171,10 @@ sp_list <- read_excel(paste0(home, "/_mikaela/Riskanalys 2024 biologisk rådgiv
   mutate(stock = paste(Art, Bestånd)) |> 
   distinct(stock)
 
-# NA means species above in the list... 
-#sp_list |> as.data.frame()
-
 # Add stock column
 # https://stockdatabase.ices.dk/default.aspx
+
+sort(unique(preCL$SUB_REGION))
 
 preCL <- preCL |> 
   mutate(
@@ -185,8 +197,8 @@ preCL <- preCL |>
                      "halibut.27", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Knot" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"), 
                      "gug.27.3a47d", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Kolja" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a"), 
-                     "had.27.46a20", Bestånd), #FIXME: The stock is 4... so which stock is 3a?
+    Bestånd = ifelse(FNAMNSVE == "Kolja" & SUB_REGION %in% c("27.3.a.20", "27.4.a", "27.4.b", "27.4.c", "27.6.a"), 
+                     "had.27.46a20", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Krabbtaska" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"), 
                      "bcrab.27.3a", Bestånd), #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
     Bestånd = ifelse(FNAMNSVE == "Kummel" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"),
@@ -223,7 +235,7 @@ preCL <- preCL |>
                      "dab.27.3a4", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Sandskädda" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
                      "dab.27.22-32", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.2.a", "27.4.a"),
+    Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.2.a"),
                      "her.27.1-24a514a", Bestånd), #FIXME: divisions 4.a is both in this stock and in her.27.3a47d below
     Bestånd = ifelse(FNAMNSVE == "Sill/Strömming" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24"), 
                      "her.27.20-24", Bestånd),
@@ -242,12 +254,12 @@ preCL <- preCL |>
                      "fle.27.3a4", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23"),
                      "fle.27.2223", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25"), #FIXME: 24-25 NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
-                     "fle.27.24-25", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25"), 
+                     "bzq.27.2425", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.27", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
                      "bwp.27.2729-32 	", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.26", "27.3.d.28.1", "27.3.d.28.2"), #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
-                     "bwp.27.2628", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.26", "27.3.d.28.1", "27.3.d.28.2"),
+                     "bzq.27.2628", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Slätvar" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
                      "bll.27.3a47de", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Slätvar" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
@@ -259,7 +271,7 @@ preCL <- preCL |>
     Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24"),
                      "cod.27.22-24", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
-                     "cod.27.24-32", Bestånd), #FIXME Stock name is 24-32 but surely this is 25-32?
+                     "cod.27.24-32", Bestånd), #NOTE, we do not include SD24 here
     Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.3.a.21"),
                      "cod.27.21", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Torsk" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20"), #FIXME 6a not in Daniels list
@@ -290,8 +302,6 @@ preCL <- preCL |>
                      "san.27.3a4", Bestånd), #FIXME: 3a + 4 is not a stock, made up name
     Bestånd = ifelse(FNAMNSVE == "Siklöja" & SUB_REGION %in% c("27.3.d.30", "27.3.d.31"), #FIXME: Not in stock-db, made up name
                      "ven.27.3031", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Siklöja" & SUB_REGION %in% c("27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.29", "27.3.d.32"), #FIXME: Not in stock-db, made up name
-                     "ven.27.25-2932", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Skoläst" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"),
                      "rng.27.3a", Bestånd))
 ```
