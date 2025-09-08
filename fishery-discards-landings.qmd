@@ -1,0 +1,407 @@
+---
+title: "Tabeller för ekologisk riskanalys"
+author: "Max Lindmark"
+date: today
+date-format: iso
+toc: true
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 100%
+editor: source
+execute:
+  warning: false
+---
+
+# Load libraries
+
+```{r load libs}
+#| message: false
+
+library(tidyverse)
+library(tidylog)
+library(kableExtra)
+library(writexl)
+library(readxl)
+library(raster)
+
+# Set make working directory relative to your path -- no hardcoded paths
+home <- here::here()
+
+source(paste0(home, "/R/lat-lon.R"))
+```
+
+# Load FDI data
+
+```{r}
+#| code-fold: false
+
+load(paste0(home, "/data/Table_A_catch_FDI_with_fisheries_species_2013-2023.RData"))
+
+catch <- table_A_catch |>
+  mutate(Fiske = str_replace_all(Fiske, "_", " ")) |>
+  mutate(Fiske = as.factor(Fiske)) |>
+  filter(!Fiske == "Unknown") |>
+  droplevels() |>
+  mutate(Fiske = as.character(Fiske)) |>
+  mutate(DISCARDS = as.numeric(DISCARDS))
+```
+
+# Modify fisheries for ERA
+
+```{r}
+#---- Västerhavet
+# Pelagiskt fiske med aktiva redskap (flyttrål, vad) # SK/KA/NS # Fiske: "Pelagiskt fiske", splitta efter redskap och sub_region (ej OTB/PTB/OTT)
+# Pelagiskt fiske med aktiva redskap (flyttrål, vad) # SD 20-24 # Fiske: "Pelagiskt fiske", splitta efter redskap och sub_region (ej OTB/PTB/OTT)
+# Pelagiskt fiske med aktiva redskap (bottentrål)    # SK/NS    # Fiske: "Pelagiskt fiske", splitta efter redskap och sub_region (OTB/PTB/OTT)
+# Räkfiske tunnel och rist # SK/KA/NS                           # Fiske: "Räkfiske med rist/tunnel i Skagerrak Kattegatt och Nordsjön"
+# Räkfiske rist # SK/KA/NS                                      # Fiske: "Räkfiske med rist i Skagerrak Kattegatt och Nordsjön"
+
+# Bottentrål fisk # NS                                          # Fiske: "Bottentrålfiske efter fisk", splitta på sub_region
+# Bottentrål fisk # SK                                          # Fiske: "Bottentrålfiske efter fisk", splitta på sub_region
+# Bottentrål havskräfta och fisk-Skagerrak # SK                 # Fiske: "Bottentrålfiske efter kräfta och fisk", splitta på sub_region
+# Bottentrål havskräfta och fisk-Kattegatt # KA                 # Fiske: "Bottentrålfiske efter kräfta och fisk", splitta på sub_region
+# Bottentrål havskräfta rist # SK/KA                            # Fiske: "Bottentrålfiske efter kräfta med rist"
+# Fiske med kräftburar # SK/KA                                  # Fiske: "Fiske med kräftburar"
+# Fiske med passiva redskap # SK/KA                             # Fiske: "Fiske med passiva redskap på västkusten"
+
+#---- Östersjön
+# Pelagiskt fiske med aktiva redskap (flyttrål, vad)   # 25-29 # Fiske: splitta "Pelagiskt fiske" efter redskap (ej OTB/PTB/OTT) och sub_region
+# Pelagiskt fiske med aktiva redskap (flyttrål, vad)   # 30-31 # Fiske: splitta "Pelagiskt fiske" efter redskap (ej OTB/PTB/OTT) och sub_region
+# Fiske med finmaskig bottentrål efter pelagiska arter # 25-29 # Fiske: splitta "Pelagiskt fiske" efter redskap (OCH OTB/PTB/OTT) och sub_region
+# Fiske med finmaskig bottentrål efter pelagiska arter # 30-31 # Fiske: splitta "Pelagiskt fiske" efter redskap (OCH OTB/PTB/OTT) och sub_region ALT: Fiske efter siklöja med bottentrål
+# Fiske med stormaskig bottentrål (torsk) i Östersjön  # 25-32 # Fiske: "Bottentrålfiske efter torsk i Östersjön" och sub_region
+# Fiske med stormaskig bottentrål (torsk) i Östersjön  # 22-24 # Fiske: "Bottentrålfiske efter torsk i Östersjön" och sub_region
+# Passiva redskap (torsk) Öresund/Östersjön            # 25-32
+# Passiva redskap (torsk) Öresund/Östersjön            # 22-24 # Fiske: "Fiske i Öresund"
+# Fiske med övriga passiva redskap i hela Östersjön    # 22-32 # Fiske: "Fiske med passiva redskap i centrala och södra Östersjön", "Fiske med passiva redskap i norra Östersjön", "Fiske i Öresund"
+
+catch <- catch |>
+  mutate(
+    Fiske_ERA = NA,
+    # Västerhavet
+    Fiske_ERA = ifelse(Fiske == "Pelagiskt fiske" &
+      !GEAR_TYPE %in% c("OTB", "PTB", "OTT") &
+      SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"),
+    "Pelagiskt fiske med aktiva redskap (flyttrål, vad); 3a4",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Pelagiskt fiske" &
+      !GEAR_TYPE %in% c("OTB", "PTB", "OTT") &
+      SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24"),
+    "Pelagiskt fiske med aktiva redskap (flyttrål, vad); 20-24",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Pelagiskt fiske" &
+      GEAR_TYPE %in% c("OTB", "PTB", "OTT") &
+      SUB_REGION %in% c("27.3.a.21", "27.4.a", "27.4.b", "27.4.c"),
+    "Pelagiskt fiske med aktiva redskap (bottentrål);  3a204",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Räkfiske med rist/tunnel i Skagerrak Kattegatt och Nordsjön" &
+      SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"),
+    "Räkfiske tunnel och rist;  3a4",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Räkfiske med rist i Skagerrak Kattegatt och Nordsjön" &
+      SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"),
+    "Räkfiske rist;  3a4",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Bottentrålfiske efter fisk" &
+      SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c"),
+    "Bottentrål fisk;  4",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Bottentrålfiske efter fisk" &
+      SUB_REGION %in% c("27.3.a.20"),
+    "Bottentrål fisk;  3a20",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Bottentrålfiske efter kräfta och fisk" &
+      SUB_REGION %in% c("27.3.a.20"),
+    "Bottentrål havskräfta och fisk;  3a20",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Bottentrålfiske efter kräfta och fisk" &
+      SUB_REGION %in% c("27.3.a.21"),
+    "Bottentrål havskräfta och fisk;  3a21",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Bottentrålfiske efter kräfta med rist" &
+      SUB_REGION %in% c("27.3.a.21", "27.3.a.20"),
+    "Bottentrål havskräfta rist;  3a",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Bottentrålfiske efter fisk" &
+      SUB_REGION == "27.3.a.21",
+    "Bottentrål havskräfta och fisk;  3a21",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Fiske med kräftburar" &
+      SUB_REGION %in% c("27.3.a.21", "27.3.a.20"),
+    "Fiske med kräftburar;  3a",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Fiske med passiva redskap på västkusten" &
+      SUB_REGION %in% c("27.3.a.21", "27.3.a.20"),
+    "Fiske med passiva redskap;  3a",
+    Fiske_ERA
+    ),
+    # Fiske_ERA = ifelse(Fiske == "Fiske med passiva redskap på västkusten" &
+    #
+    #                      SUB_REGION %in% c("27.3.a.21", "27.3.a.20"),
+    #                    "Fiske med hummertinor redskap;  3a",
+    #                    Fiske_ERA),
+    # Östersjön
+    Fiske_ERA = ifelse(Fiske == "Pelagiskt fiske" &
+      !GEAR_TYPE %in% c("OTB", "PTB", "OTT") &
+      SUB_REGION %in% c(
+        "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1",
+        "27.3.d.28.2", "27.3.d.29"
+      ),
+    "Pelagiskt fiske med aktiva redskap (flyttrål, vad); 25-29",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Pelagiskt fiske" &
+      !GEAR_TYPE %in% c("OTB", "PTB", "OTT") &
+      SUB_REGION %in% c("27.3.d.30", "27.3.d.31"),
+    "Pelagiskt fiske med aktiva redskap (flyttrål, vad); 30-31",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Fiske efter siklöja med bottentrål",
+      "Fiske med finmaskig bottentrål efter pelagiska arter; 30-31",
+      Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Pelagiskt fiske" &
+      GEAR_TYPE %in% c("OTB", "PTB", "OTT") &
+      SUB_REGION %in% c(
+        "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1",
+        "27.3.d.28.2", "27.3.d.29"
+      ),
+    "Fiske med finmaskig bottentrål efter pelagiska arter; 25-29",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Pelagiskt fiske" &
+      GEAR_TYPE %in% c("OTB", "PTB", "OTT") &
+      SUB_REGION %in% c("27.3.d.30", "27.3.d.31"),
+    "Fiske med finmaskig bottentrål efter pelagiska arter; 30-31",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Bottentrålfiske efter torsk i Östersjön" &
+      SUB_REGION %in% c(
+        "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1",
+        "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"
+      ),
+    "Fiske med stormaskig bottentrål (torsk); 25-32",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Bottentrålfiske efter torsk i Östersjön" &
+      SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24"),
+    "Fiske med stormaskig bottentrål (torsk); 22-24",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske == "Fiske i Öresund" &
+      GEAR_TYPE %in% c("GNS", "GTR") &
+      MESH_SIZE_RANGE %in% c("110D157", "157DXX") &
+      SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24"),
+    "Passiva redskap (torsk); 22-24",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske %in% c(
+      "Fiske med passiva redskap i centrala och södra Östersjön",
+      "Fiske med passiva redskap i norra Östersjön"
+    ) &
+      GEAR_TYPE %in% c("GNS", "GTR") &
+      MESH_SIZE_RANGE %in% c("110D157", "157DXX") &
+      SUB_REGION %in% c(
+        "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1", "27.3.d.28.2",
+        "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"
+      ),
+    "Passiva redskap (torsk); 25-32",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske %in% c(
+      "Fiske i Öresund",
+      "Fiske med passiva redskap i centrala och södra Östersjön",
+      "Fiske med passiva redskap i norra Östersjön"
+    ) &
+      is.na(Fiske_ERA),
+    "Fiske med övriga passiva redskap; 22-32",
+    Fiske_ERA
+    ),
+    Fiske_ERA = ifelse(Fiske %in% c("Fiske efter lax"),
+      "Fiske med övriga passiva redskap; 22-32",
+      Fiske_ERA
+    ),
+  )
+```
+
+```{r}
+knitr::kable(
+  catch |>
+    drop_na(Fiske_ERA) |>
+    distinct(Fiske_ERA, GEAR_TYPE, SUB_REGION, Fiske) |>
+    arrange(Fiske_ERA, Fiske, GEAR_TYPE, SUB_REGION),
+  format = "html",
+  full_width = FALSE,
+  caption = "Redskap och subregion per ERA-fiske"
+) |>
+  kable_styling()
+```
+
+# Add stock column
+
+```{r}
+# https://stockdatabase.ices.dk/default.aspx
+
+sort(unique(catch$SUB_REGION))
+
+# NOTE: Herring in subdivisions with multiple stocks are assigned as followes:
+# 4a -> her.27.3a47d stock, not her.27.1-24a514a
+# 3a -> her.27.3a47d stock, not her.27.20-24
+
+catch <- catch |>
+  mutate(
+    Bestånd = NA,
+    Bestånd = ifelse(Svenskt_namn == "Torsk" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24"),
+      "cod.27.22-24", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Torsk" & SUB_REGION %in% c("27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+      "cod.27.24-32", Bestånd
+    ), # NOTE, we do not include SD24 here
+    Bestånd = ifelse(Svenskt_namn == "Torsk" & SUB_REGION %in% c("27.3.a.21"),
+      "cod.27.21", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Torsk" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20"),
+      "cod.27.46a7d20", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Sill / strömming" & SUB_REGION %in% c("27.2.a.2"),
+      "her.27.1-24a514a", Bestånd
+    ), # FIXME: divisions 4.a is both in this stock and in her.27.3a47d below
+    Bestånd = ifelse(Svenskt_namn == "Sill / strömming" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24"),
+      "her.27.20-24", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Sill / strömming" & SUB_REGION %in% c("27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.29", "27.3.d.32"),
+      "her.27.25-2932", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Sill / strömming" & SUB_REGION %in% c("27.3.d.30", "27.3.d.31"),
+      "her.27.3031", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Sill / strömming" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"),
+      "her.27.3a47d", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Skarpsill" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+      "spr.27.22-32", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Skarpsill" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"),
+      "spr.27.3a4", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Rödspätta" & SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23"),
+      "ple.27.21-23", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Rödspätta" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"),
+      "ple.27.24-32", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Rödspätta" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20"),
+      "ple.27.420", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Havskräfta" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"),
+      "nep.fu.3-4", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Nordhavsräka" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a"),
+      "pra.27.3a4a", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Kolja" & SUB_REGION %in% c("27.3.a.20", "27.4.a", "27.4.b", "27.4.c", "27.6.a"),
+      "had.27.46a20", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Gråsej" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"),
+      "pok.27.3a46", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Vitling" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21"),
+      "whg.27.3a", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Vitling" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c"),
+      "whg.27.47d", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Äkta tunga" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24"),
+      "sol.27.20-24", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Kummel" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.6.a", "27.3.a.20", "27.3.a.21"),
+      "hke.27.3a46-8abd", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Pigghaj",
+      "dgs.27.nea", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Rödtunga" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+      "wit.27.3a47d", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Bergtunga" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+      "lem.27.3a47d", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Slätvar" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
+      "bll.27.3a47de", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Makrill",
+      "mac.27.nea", Bestånd
+    ),
+    Bestånd = ifelse(Svenskt_namn == "Blåvitling",
+      "whb.27.1-91214", Bestånd
+    )
+  )
+
+# Renames some columns
+catch <- catch |> rename(Art = Svenskt_namn)
+
+# Did all these species get a stock?
+catch |>
+  filter(Art %in% c(
+    "Blåvitling", "Makrill", "Slätvar", "Bergtunga", "Rödtunga", "Pigghaj",
+    "Kummel", "Äkta tunga", "Vitling", "Gråsej", "Kolja", "Nordhavsräka",
+    "Havskräfta", "Rödspätta", "Skarpsill", "Sill / strömming", "Torsk"
+  )) |>
+  summarise(n_stock = length(unique(Bestånd)), .by = Art)
+```
+
+# 1. Största fisken per bestånd
+De fisken som tillsammans/kumulativt utgör minst 95% av ett de totala fångsterna (L+D) av ett bestånd
+
+```{r}
+#| code-fold: false
+#| results: asis
+
+stock_target_sub_list <- list()
+
+for (i in unique(catch$Fiske_ERA)) {
+  stock_target_sub <- catch |>
+    filter(Fiske_ERA == i) |>
+    mutate(DISCARDS = replace_na(DISCARDS, 0)) |>
+    summarise(
+      Discards = sum(DISCARDS, na.rm = TRUE),
+      Landings = sum(TOTWGHTLANDG, na.rm = TRUE),
+      .by = c(Fiske_ERA, Art, YEAR)
+    ) |>
+    arrange(Fiske_ERA, YEAR, desc(Landings))
+
+  print(knitr::kable(stock_target_sub,
+    format = "html",
+    full_width = TRUE,
+    caption = paste("Fiske = ", i)
+  ) |>
+    kable_styling())
+
+  stock_target_sub_list[[i]] <- stock_target_sub |> mutate(Fiske_ERA = i)
+}
+
+stock_target_sub_df <- bind_rows(stock_target_sub_list) |>
+  relocate(YEAR, .before = Art) |>
+  relocate(Landings, .before = Art)
+
+write_xlsx(stock_target_sub_df, paste0(home, "/output/2023/Fishery-discard-landing/fishery_discard_landing.xlsx"))
+```
