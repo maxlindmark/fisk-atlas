@@ -35,6 +35,26 @@ library(raster)
 home <- here::here()
 
 source(paste0(home, "/R/lat-lon.R"))
+
+# Instructions:
+# Every year I rerun this script. Get new loogbook (Lövgren) and Table_A_catch data from Sofia
+# and update the file paths below to point to the new data.
+# Everything else (year windows in filters/headings, the output folder, and the
+# Euro-Sek API date range) is derived automatically from the max year in the loaded data
+# -- see the "Define year windows and output paths" section below.
+#
+# Instead of clicking Render, run render() in the console -- it renders the
+# document and moves the resulting HTML into the output folder (output/<year>/ERA,
+# same folder the .xlsx tables are written to). The script is rerun the year
+# after the data's last complete year, so the current calendar year is used.
+render <- function(output_path = NULL) {
+  quarto::quarto_render(here::here("ekologisk-riskanalys.qmd"))
+  if (is.null(output_path)) output_path <- here::here("output", format(Sys.Date(), "%Y"), "ERA")
+  file.rename(
+    here::here("ekologisk-riskanalys.html"),
+    file.path(output_path, "ekologisk-riskanalys.html")
+  )
+}
 ```
 
 # Load FDI data
@@ -43,8 +63,8 @@ source(paste0(home, "/R/lat-lon.R"))
 #| code-fold: false
 
 #load(paste0(home, "/data/Table_A_catch_FDI_with_fisheries_species_2013-2023.RData"))
-
-load(paste0(home, "/_daniel/Table_A_catch_FDI_with_fisheries_species_2013-2024.RData"))
+#load(paste0(home, "/_daniel/Table_A_catch_FDI_with_fisheries_species_2013-2024.RData"))
+load(paste0(home, "/_daniel/Table_A_catch_FDI_with_fisheries_species_2013-2025.RData"))
 
 catch <- table_A_catch |>
   mutate(Fiske = str_replace_all(Fiske, "_", " ")) |>
@@ -397,7 +417,9 @@ catch |>
 #| code-fold: false
 
 #load(paste0(home, "/data/lovgren_foCatFA_2003_2023_20240821.RData"))
-load("/Users/maxlindmark/atlas-data//lovgren_foCatFA_2003_2024_20250825.RData")
+#load("/Users/maxlindmark/Data/atlas-data//lovgren_foCatFA_2003_2024_20250825.RData")
+load("/Users/maxlindmark/Data/atlas-data//lovgren_foCatFA_2003_2025_20260821.RData")
+
 
 lb <- lovgren_foCatFA |>
   rename(foCatFA = foCatFA_update) |>
@@ -410,8 +432,7 @@ lb <- lb %>%
     lon = format_position(LONGITUD)
   )
 
-shape <- shapefile(paste0("/Users/maxlindmark/Dropbox/Max work/R/pred-prey-overlap",
-                          "/data/shapefiles/ICES-StatRec-mapto-ICES-Areas/StatRec_map_Areas_Full_20170124.shp"))
+shape <- shapefile("/Users/maxlindmark/Dropbox/max-work/R/pred-prey-overlap/data/shapefiles/ICES-StatRec-mapto-ICES-Areas/StatRec_map_Areas_Full_20170124.shp")
 
 pts <- SpatialPoints(cbind(lb$lon, lb$lat),
   proj4string = CRS(proj4string(shape))
@@ -604,6 +625,34 @@ knitr::kable(
 lb <- lb |> drop_na(Fiske_ERA)
 ```
 
+# Define year windows and output paths
+
+```{r}
+#| code-fold: false
+
+# Derive year windows from the loaded data instead of hardcoding them every year
+catch_max_year <- max(catch$YEAR, na.rm = TRUE)
+lb_max_year <- max(lb$year, na.rm = TRUE)
+
+years_5 <- (catch_max_year - 4):catch_max_year # used in sections 1 & 2
+years_3_catch <- (catch_max_year - 2):catch_max_year # used in section 4 (catch data)
+years_3_lb <- (lb_max_year - 2):lb_max_year # used in section 3 (loggbook data)
+
+# Formats e.g. c(2023, 2024, 2025) as "2023, 2024 och 2025" for headings
+format_years_sv <- function(years) {
+  years <- sort(unique(years))
+  if (length(years) == 1) {
+    return(as.character(years))
+  }
+  paste0(paste(years[-length(years)], collapse = ", "), " och ", years[length(years)])
+}
+
+# The script is rerun the year after the data's last complete year
+# (e.g. data through 2025 -> output folder "2026")
+output_dir <- paste0(home, "/output/", catch_max_year + 1, "/ERA")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
 # 1. Målarter per fiske
 De arter som tillsammans/kumulativt utgör minst 95% av fiskets totala fångstvärde
 
@@ -616,7 +665,7 @@ target_sp_list <- list()
 for (i in unique(catch$Fiske_ERA)) {
   target_sp <- catch |>
     filter(Fiske_ERA == i) |>
-    filter(YEAR >= 2020 & YEAR <= 2024) |>
+    filter(YEAR %in% years_5) |>
     drop_na(TOTWGHTLANDG) |>
     drop_na(Art) |>
     summarise(Värde = sum(TOTVALLANDG), .by = Art) |>
@@ -657,7 +706,7 @@ for (i in unique(catch$Fiske_ERA)) {
 
 target_sp_df <- bind_rows(target_sp_list)
 
-write_xlsx(target_sp_df, paste0(home, "/output/2025/ERA/table1.xlsx"))
+write_xlsx(target_sp_df, paste0(output_dir, "/table1.xlsx"))
 ```
 
 # 2. Största fisken per bestånd
@@ -674,7 +723,7 @@ stock_target_sub_list <- list()
 for (i in unique(catch_sub$Bestånd)) {
   stock_target_sub <- catch_sub |>
     filter(Bestånd == i) |>
-    filter(YEAR >= 2020 & YEAR <= 2024) |>
+    filter(YEAR %in% years_5) |>
     mutate(
       DISCARDS = replace_na(DISCARDS, 0),
       Fångst = DISCARDS + TOTWGHTLANDG
@@ -717,20 +766,20 @@ for (i in unique(catch_sub$Bestånd)) {
 
 stock_target_sub_df <- bind_rows(stock_target_sub_list)
 
-write_xlsx(stock_target_sub_df, paste0(home, "/output/2025/ERA/table2.xlsx"))
+write_xlsx(stock_target_sub_df, paste0(output_dir, "/table2.xlsx"))
 ```
 
-# 3. Antal aktiva fartyg i varje fiske per år de senaste tre åren (2022, 2023 och 2024)
+# 3. Antal aktiva fartyg i varje fiske per år de senaste tre åren (`r format_years_sv(years_3_lb)`)
 
 ```{r}
 #| message: false
 #| results: asis
 
-# TODO: what should the cutoff be? Here I remove vessels that appear less than 10 times since 2022
+# TODO: what should the cutoff be? Here I remove vessels that appear less than 10 times since the start of the 3-year window
 
 # Fleet
 fleet <- lb |>
-  filter(year >= 2022) |>
+  filter(year %in% years_3_lb) |>
   drop_na(LÄNGD) |>
   summarise(n_vessels = length(unique(BATNAMN)), .by = c(Fiske_ERA, year)) |>
   arrange(year, desc(n_vessels)) |>
@@ -744,10 +793,10 @@ knitr::kable(fleet,
 ) |>
   kable_styling()
 
-write_xlsx(fleet, paste0(home, "/output/2025/ERA/table3.xlsx"))
+write_xlsx(fleet, paste0(output_dir, "/table3.xlsx"))
 ```
 
-# 4. Totalt landningsvärde per fiske per år de senaste tre åren (2022, 2023 och 2024)
+# 4. Totalt landningsvärde per fiske per år de senaste tre åren (`r format_years_sv(years_3_catch)`)
 
 ```{r}
 #| message: false
@@ -755,19 +804,47 @@ write_xlsx(fleet, paste0(home, "/output/2025/ERA/table3.xlsx"))
 
 # https://data.ecb.europa.eu/data/datasets/EXR/EXR.D.SEK.EUR.SP00.A?chart_props=W3sibm9kZUlkIjoiMzIyNDQyIiwicHJvcGVydGllcyI6W3siY29sb3JIZXgiOiIiLCJjb2xvclR5cGUiOiIiLCJjaGFydFR5cGUiOiJsaW5lY2hhcnQiLCJsaW5lU3R5bGUiOiJTb2xpZCIsImxpbmVXaWR0aCI6IjEuNSIsImF4aXNQb3NpdGlvbiI6ImxlZnQiLCJvYnNlcnZhdGlvblZhbHVlIjpmYWxzZSwiZGF0ZXMiOlsiMjAyMS0xMi0zMVQyMzowMDowMC4wMDBaIiwiMjAyNC0xMi0zMFQyMzowMDowMC4wMDBaIl0sImlzVGRhdGEiOmZhbHNlLCJtb2RpZmllZFVuaXRUeXBlIjoiIiwieWVhciI6ImRhdGV3aXNlIiwic3RhcnREYXRlIjoiMjAyMi0wMS0wMSIsImVuZERhdGUiOiIyMDI0LTEyLTMxIiwic2V0RGF0ZSI6dHJ1ZSwic2hvd1RhYmxlRGF0YSI6ZmFsc2UsImNoYW5nZU1vZGUiOmZhbHNlLCJzaG93TWVudVN0eWxlQ2hhcnQiOmZhbHNlLCJkaXNwbGF5TW9iaWxlQ2hhcnQiOnRydWUsInNjcmVlblNpemUiOiJtYXgiLCJzY3JlZW5XaWR0aCI6MTcxMiwic2hvd1RkYXRhIjpmYWxzZSwidHJhbnNmb3JtZWRGcmVxdWVuY3kiOiJub25lIiwidHJhbnNmb3JtZWRVbml0Ijoibm9uZSIsImZyZXF1ZW5jeSI6Im5vbmUiLCJ1bml0Ijoibm9uZSIsIm1vZGlmaWVkIjoiZmFsc2UiLCJzZXJpZXNLZXkiOiJkYWlseSIsInNob3d0YWJsZVN0YXRlQmVmb3JlTWF4U2NyZWVuIjpmYWxzZSwiaXNkYXRhY29tcGFyaXNvbiI6ZmFsc2UsInNlcmllc0ZyZXF1ZW5jeSI6ImRhaWx5IiwiaW50aWFsU2VyaWVzRnJlcXVlbmN5IjoiZGFpbHkiLCJtZXRhZGF0YURlY2ltYWwiOiI0IiwiaXNUYWJsZVNvcnRlZCI6ZmFsc2UsImlzWWVhcmx5VGRhdGEiOmZhbHNlLCJyZXNwb25zZURhdGFFbmREYXRlIjoiMjAyNS0wOC0yNiIsImlzaW5pdGlhbENoYXJ0RGF0YSI6dHJ1ZSwiaXNEYXRlc0Zyb21EYXRlUGlja2VyIjp0cnVlLCJkYXRlUGlja2VyRW5kRGF0ZSI6IjIwMjQtMTItMzEiLCJpc0RhdGVQaWNrZXJFbmREYXRlIjp0cnVlLCJzZXJpZXNrZXlTZXQiOiIiLCJkYXRhc2V0SWQiOiIxOCIsImlzQ2FsbGJhY2siOmZhbHNlLCJpc1NsaWRlclRkYXRhIjp0cnVlLCJpc1NsaWRlckRhdGEiOnRydWUsImlzSW5pdGlhbENoYXJ0RGF0YUZyb21HcmFwaCI6dHJ1ZSwiY2hhcnRTZXJpZXNLZXkiOiJFWFIuRC5TRUsuRVVSLlNQMDAuQSIsInR5cGVPZiI6ImRvd25Mb2FkIn1dfV0%3D
 
-exchange <- read_csv("/Users/maxlindmark/atlas-data/ECB Data Portal_20250826200550.csv") |>
+# exchange_old <- read_csv("/Users/maxlindmark/Data/atlas-data/ECB Data Portal_20250826200550.csv") |>
+#   janitor::clean_names() |>
+#   rename(exchange = swedish_krona_euro_exr_d_sek_eur_sp00_a) |>
+#   mutate(
+#     YEAR = year(date),
+#     QUARTER = quarter(date)
+#   ) |>
+#   filter(YEAR %in% c(2022, 2023, 2024)) |>
+#   drop_na(exchange) |>
+#   summarise(mean_exchange = mean(exchange), .by = c(YEAR, QUARTER))
+
+# Read it programatically instead
+exr_url <- paste0(
+  "https://data-api.ecb.europa.eu/service/data/EXR/D.SEK.EUR.SP00.A",
+  "?startPeriod=", min(years_3_catch), "-01-01",
+  "&endPeriod=", max(years_3_catch), "-12-31",
+  "&format=csvdata"
+)
+
+exchange <- read_csv(exr_url) |>
   janitor::clean_names() |>
-  rename(exchange = swedish_krona_euro_exr_d_sek_eur_sp00_a) |>
+  dplyr::select(date = time_period, exchange = obs_value) |>
   mutate(
+    date = as_date(date),
     YEAR = year(date),
     QUARTER = quarter(date)
   ) |>
-  filter(YEAR %in% c(2022, 2023, 2024)) |>
+  filter(YEAR %in% years_3_catch) |>
   drop_na(exchange) |>
   summarise(mean_exchange = mean(exchange), .by = c(YEAR, QUARTER))
 
+# bind_rows(
+#   exchange |> mutate(source = "old"),
+#   exchange_old |> mutate(source = "new")) |> 
+#   ggplot(aes(YEAR, mean_exchange, color = source)) + 
+#   geom_point(alpha = 0.5, size = 4) +
+#   #geom_line() +
+#   facet_wrap(~QUARTER)
+
 value_fishery <- catch |>
-  filter(YEAR >= 2022) |>
+  filter(YEAR %in% years_3_catch) |>
   left_join(exchange, by = c("YEAR", "QUARTER")) |>
   drop_na(TOTVALLANDG) |>
   mutate(VALUE_SEK = TOTVALLANDG * mean_exchange) |>
@@ -784,5 +861,5 @@ knitr::kable(value_fishery,
 ) |>
   kable_styling()
 
-write_xlsx(value_fishery, paste0(home, "/output/2025/ERA/table4.xlsx"))
+write_xlsx(value_fishery, paste0(output_dir, "/table4.xlsx"))
 ```

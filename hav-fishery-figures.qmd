@@ -1,5 +1,5 @@
 ---
-title: "Mikaelas fishery stuff"
+title: "Mikaelas stuff"
 author: "Max Lindmark"
 date: today
 date-format: iso
@@ -39,6 +39,25 @@ source(paste0(home, "/R/lat-lon.R"))
 
 # Change the limit for scientific notation
 options(scipen = 10000)
+
+# Instructions:
+# Every year I rerun this script. Get new PreCl data from Sofia and update the
+# file path in the "Load data" section below to point to the new data.
+# The output folder (output/<year>/HaV) is derived automatically from the max
+# fishing date in the loaded data -- see the "Define output path" section below.
+#
+# Instead of clicking Render, run render() in the console -- it renders the
+# document and moves the resulting HTML into the output folder (output/<year>/HaV,
+# same folder the .xlsx table is written to). The script is rerun the year after
+# the data's last complete year, so the current calendar year is used.
+render <- function(output_path = NULL) {
+  quarto::quarto_render(here::here("hav-fishery-figures.qmd"))
+  if (is.null(output_path)) output_path <- here::here("output", format(Sys.Date(), "%Y"), "HaV")
+  file.rename(
+    here::here("hav-fishery-figures.html"),
+    file.path(output_path, "hav-fishery-figures.html")
+  )
+}
 ```
 
 # Load data
@@ -52,13 +71,14 @@ options(scipen = 10000)
 #load(paste0(home, "/_mikaela/preCL_cleaned_20240312.RData"))
 
 # 2025
-load(paste0(home, "/_mikaela/preCL_cleaned_20250314.RData"))
+# load(paste0(home, "/_mikaela/preCL_cleaned_20250314.RData"))
 
-sort(unique(preCL$FISKEDATUM))
+# 2026
+load("/Users/maxlindmark/Data/atlas-data/preCL_cleaned_20260318.RData")
+
 
 # Add ICES subdivision
-shape <- shapefile(paste0("/Users/maxlindmark/Dropbox/Max work/R/pred-prey-overlap",
-                          "/data/shapefiles/ICES-StatRec-mapto-ICES-Areas/StatRec_map_Areas_Full_20170124.shp"))
+shape <- shapefile("/Users/maxlindmark/Dropbox/max-work/R/pred-prey-overlap/data/shapefiles/ICES-StatRec-mapto-ICES-Areas/StatRec_map_Areas_Full_20170124.shp")
 
 pts <- SpatialPoints(cbind(preCL$DECLONG, preCL$DECLAT), 
                      proj4string = CRS(proj4string(shape)))
@@ -135,6 +155,18 @@ preCL <- preCL |>
             by = c("REDSKKOD", "omrade"))
 ```
 
+# Define output path
+
+```{r}
+#| code-fold: false
+
+# The script is rerun the year after the data's last complete year
+# (e.g. data through 2025 -> output folder "2026")
+data_max_year <- max(year(as.Date(preCL$FISKEDATUM, format = "%Y%m%d")), na.rm = TRUE)
+output_dir <- paste0(home, "/output/", data_max_year + 1, "/HaV")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
 # What focatnat categories are in each gear?
 
 ```{r}
@@ -166,8 +198,8 @@ knitr::kable(preCL_sub,
 # preCL <- preCL |>
 #   left_join(spcode, by = "MAFKOD")
 
-asfis <- read_csv(paste0("/Users/maxlindmark/atlas-data", "/ASFIS_sp_2021.csv")) 
-swe_sp <- read_delim(paste0("/Users/maxlindmark/atlas-data", "/latin_swedish_names.csv")) 
+asfis <- read_csv(paste0("/Users/maxlindmark/Data/atlas-data", "/ASFIS_sp_2021.csv")) 
+swe_sp <- read_delim(paste0("/Users/maxlindmark/Data/atlas-data", "/latin_swedish_names.csv")) 
 
 swe_sp <- swe_sp |> 
   left_join(asfis |> 
@@ -188,6 +220,8 @@ swe_sp <- bind_rows(swe_sp_eel, swe_sp)
 
 preCL <- preCL |>
   left_join(swe_sp, by = c("MAFKOD" = "3A_CODE"))
+
+sort(unique(preCL$FNAMNSVE))
 
 # Which stocks do we need to define?
 sp_list <- read_excel(paste0(home, "/_mikaela/Riskanalys 2024 biologisk rådgivning och riskanalys av fiskerier.xlsx"), sheet = 2) |> 
@@ -267,10 +301,9 @@ preCL <- preCL |>
                      "rockor", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Nordhavsräka" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a"), #FIXME: 4a east? same as 27.4.a?
                      "pra.27.3a4a", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Rödspätta" & SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23"), 
-                     "ple.27.21-23", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Rödspätta" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
-                     "ple.27.24-32", Bestånd),
+    # preCL |> filter(SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32")) |> filter(FNAMNSVE == "Rödspätta") |> summarise(KG = sum(KG), .by = SUB_REGION)
+    Bestånd = ifelse(FNAMNSVE == "Rödspätta" & SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23", "27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
+                     "ple.27.21-32", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Rödspätta" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20"), 
                      "ple.27.420", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Rödtunga" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
@@ -293,10 +326,10 @@ preCL <- preCL |>
                      "lumpsucker.27.23.3a", Bestånd), #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
     Bestånd = ifelse(FNAMNSVE == "Sjurygg" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25", "27.3.d.26", "27.3.d.27", "27.3.d.28.1", "27.3.d.28.2", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), #FIXME: Hav-list says 23 + 3a but there's no stock and catches are in other areas aswell
                      "lumpsucker.27.24-32", Bestånd),  #FIXME: NOT IN STOCK DB! https://stockdatabase.ices.dk/default.aspx; MADE UP NAME
-    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20", "27.3.a.21"),
-                     "fle.27.3a4", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.c.22", "27.3.b.23"),
-                     "fle.27.2223", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c", "27.3.a.20"),
+                     "fle.27.420", Bestånd),
+    Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.a.21", "27.3.c.22", "27.3.b.23"),
+                     "fle.27.2123", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.24", "27.3.d.25"), 
                      "bzq.27.2425", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Skrubbskädda" & SUB_REGION %in% c("27.3.d.27", "27.3.d.29", "27.3.d.30", "27.3.d.31", "27.3.d.32"), 
@@ -341,7 +374,9 @@ preCL <- preCL |>
                      "spr.27.22-32", Bestånd),
     Bestånd = ifelse(FNAMNSVE == "Skarpsill" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"), 
                      "spr.27.3a4", Bestånd),
-    Bestånd = ifelse(FNAMNSVE == "Tobisfiskar" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.4.a", "27.4.b", "27.4.c"), 
+    Bestånd = ifelse(FNAMNSVE == "Tobisfiskar" & SUB_REGION %in% c("27.3.a.20", "27.3.a.21", "27.3.b.22", "27.3.c.22"), 
+                     "san.27.2022", Bestånd), #FIXME: 3a + 4 is not a stock, made up name
+    Bestånd = ifelse(FNAMNSVE == "Tobisfiskar" & SUB_REGION %in% c("27.4.a", "27.4.b", "27.4.c"), 
                      "san.27.3a4", Bestånd), #FIXME: 3a + 4 is not a stock, made up name
     Bestånd = ifelse(FNAMNSVE == "Siklöja" & SUB_REGION %in% c("27.3.d.30", "27.3.d.31"), #FIXME: Not in stock-db, made up name
                      "ven.27.3031", Bestånd),
@@ -368,7 +403,7 @@ preCL |>
 
 # These stocks cross the East-West border (SUB_REGION 27.3.c.22). Here we assign them to West coast fisheries
 preCL <- preCL |> 
-  mutate(fishery = ifelse(Bestånd %in% c("sol.27.20-24", "ple.27.21-23") &
+  mutate(fishery = ifelse(Bestånd %in% c("sol.27.20-24", "ple.27.21-32") &
                             grepl("Östersjön", fishery),
                           str_replace(fishery, "Östersjön", "Västerhavet"), 
                           fishery))
@@ -403,5 +438,5 @@ knitr::kable(preCL_sum,
              caption = "Landningar i kg per fiske och bestånd") |> 
   kable_styling()
 
-write_xlsx(preCL_sum, paste0(home, "/output/2025/HaV/table1.xlsx"))
+write_xlsx(preCL_sum, paste0(output_dir, "/table1.xlsx"))
 ```
